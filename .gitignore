@@ -5,7 +5,12 @@ build/
 dist/
 wheels/
 *.egg-info
+uv.lock
 
 # Virtual environments
 .venv
 data/input/private/
+
+# agents
+.claude/
+graphify-out/
