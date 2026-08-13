@@ -1,0 +1,54 @@
+ApplyScreen {
+    layout: horizontal;
+
+    #form-panel {
+        width: 44;
+        height: 100%;
+        padding: 1 2;
+        border-right: solid $primary;
+        overflow-y: auto;
+    }
+    #form-panel Label {
+        margin-top: 1;
+        color: $text-muted;
+    }
+    #form-panel Input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #delta-row, #xbrl-row {
+        height: auto;
+    }
+    #delta-row Input, #xbrl-row Input {
+        width: 1fr;
+    }
+    .browse {
+        width: auto;
+        min-width: 8;
+        margin-left: 1;
+    }
+    #log {
+        width: 1fr;
+        height: 100%;
+        padding: 0 1;
+    }
+    #btn-row {
+        height: auto;
+        margin-top: 1;
+    }
+    #btn-run {
+        width: 1fr;
+    }
+    #btn-back {
+        width: auto;
+        margin-right: 1;
+    }
+    #screen-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    Checkbox {
+        margin-bottom: 1;
+    }
+}

@@ -1,0 +1,80 @@
+DeltaScreen {
+    layout: horizontal;
+
+    #form-panel {
+        width: 44;
+        height: 100%;
+        padding: 1 2;
+        border-right: solid $primary;
+        overflow-y: auto;
+    }
+    #form-panel Label {
+        margin-top: 1;
+        color: $text-muted;
+    }
+    #form-panel Input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #sel-old, #sel-new {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #log {
+        width: 1fr;
+        height: 100%;
+        padding: 0 1;
+    }
+    #perimeter-list {
+        height: 12;
+        border: solid $primary;
+        margin-bottom: 1;
+        display: none;
+    }
+    #btn-row {
+        height: auto;
+        margin-top: 1;
+    }
+    #btn-run {
+        width: 1fr;
+    }
+    #btn-load {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #btn-back {
+        width: auto;
+        margin-right: 1;
+    }
+    #screen-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    #perimeter-label {
+        display: none;
+    }
+    #progress {
+        display: none;
+        margin-top: 1;
+        padding-top: 1;
+        border-top: solid $primary-darken-2;
+        height: auto;
+    }
+    #step-row {
+        height: 1;
+    }
+    #step-label {
+        color: $text;
+        height: 1;
+    }
+    #step-detail {
+        color: $text-muted;
+        text-align: right;
+        height: 1;
+    }
+    ProgressBar {
+        width: 100%;
+        margin-top: 0;
+    }
+}

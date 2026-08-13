@@ -1,0 +1,73 @@
+IngestScreen {
+    layout: horizontal;
+
+    #form-panel {
+        width: 42;
+        height: 100%;
+        padding: 1 2;
+        border-right: solid $primary;
+    }
+    #form-panel Label {
+        margin-top: 1;
+        color: $text-muted;
+    }
+    #form-panel Input {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #file-row {
+        height: auto;
+    }
+    #file-row Input {
+        width: 1fr;
+    }
+    .browse {
+        width: auto;
+        min-width: 8;
+        margin-left: 1;
+    }
+    #log {
+        width: 1fr;
+        height: 100%;
+        padding: 0 1;
+    }
+    #btn-row {
+        margin-top: 1;
+        height: auto;
+    }
+    #btn-run {
+        width: 1fr;
+    }
+    #btn-back {
+        width: auto;
+        margin-right: 1;
+    }
+    #screen-title {
+        text-style: bold;
+        color: $primary;
+        margin-bottom: 1;
+    }
+    #progress {
+        display: none;
+        margin-top: 1;
+        padding-top: 1;
+        border-top: solid $primary-darken-2;
+        height: auto;
+    }
+    #step-label {
+        color: $text;
+        height: 1;
+    }
+    #step-detail {
+        color: $text-muted;
+        text-align: right;
+        height: 1;
+    }
+    #step-row {
+        height: 1;
+    }
+    ProgressBar {
+        width: 100%;
+        margin-top: 0;
+    }
+}

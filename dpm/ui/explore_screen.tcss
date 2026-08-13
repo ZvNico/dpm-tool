@@ -1,0 +1,131 @@
+ExploreScreen {
+    layout: vertical;
+
+    #topbar {
+        height: auto;
+        padding: 1 2 0 2;
+    }
+    #topbar #sel-db {
+        width: 28;
+        margin-right: 1;
+    }
+    #topbar #btn-open {
+        width: auto;
+        margin-right: 2;
+    }
+    #overview {
+        width: 1fr;
+        height: 3;
+        content-align: left middle;
+        color: $text-muted;
+    }
+
+    #tabs {
+        height: 1fr;
+    }
+    #tabs ContentSwitcher {
+        height: 1fr;
+    }
+    #tabs TabPane {
+        height: 1fr;
+        padding: 0 1;
+    }
+
+    /* Structure tab */
+    #structure-row {
+        height: 1fr;
+    }
+    #db-tree {
+        width: 44;
+        height: 100%;
+        border-right: solid $primary;
+    }
+    #struct-detail {
+        width: 1fr;
+        height: 100%;
+        padding: 0 1;
+    }
+    #struct-detail Label {
+        color: $text-muted;
+        margin-top: 1;
+    }
+    #facts-table {
+        width: 100%;
+        height: 2fr;
+    }
+    #fact-context {
+        width: 100%;
+        height: 1fr;
+    }
+
+    /* Metrics tab */
+    #metrics-row {
+        height: 1fr;
+    }
+    #metrics-left {
+        width: 1fr;
+        height: 100%;
+        border-right: solid $primary;
+        padding-right: 1;
+    }
+    #inp-metric-search {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #metrics-table {
+        width: 100%;
+        height: 1fr;
+    }
+    #metrics-right {
+        width: 1fr;
+        height: 100%;
+        padding-left: 1;
+    }
+    #metrics-right Label {
+        color: $text-muted;
+    }
+    #metric-usage {
+        width: 100%;
+        height: 1fr;
+    }
+
+    /* Dimensions tab */
+    #dimensions-row {
+        height: 1fr;
+    }
+    #dims-left {
+        width: 1fr;
+        height: 100%;
+        border-right: solid $primary;
+        padding-right: 1;
+    }
+    #inp-dimension-search {
+        width: 100%;
+        margin-bottom: 1;
+    }
+    #dims-table {
+        width: 100%;
+        height: 1fr;
+    }
+    #dims-right {
+        width: 1fr;
+        height: 100%;
+        padding-left: 1;
+    }
+    #dims-right Label {
+        color: $text-muted;
+    }
+    #members-table {
+        width: 100%;
+        height: 1fr;
+    }
+
+    #bottombar {
+        height: auto;
+        padding: 0 2 1 2;
+    }
+    #btn-back {
+        width: auto;
+        margin-right: 2;
+    }
+}

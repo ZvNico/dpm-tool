@@ -1,114 +1,93 @@
-# DPM Delta and XBRL Update Tool
+# dpm-tool
+
+A terminal UI toolkit for working with the EIOPA Solvency II **Data Point Model
+(DPM)**. It ingests the official annotated-templates workbooks into local
+databases, compares two DPM versions to produce a reviewable delta, and rolls
+that delta forward onto your XBRL instance documents.
+
+Everything runs in a [Textual](https://textual.textualize.io/) TUI — no
+subcommands to memorise.
+
+---
+
+## Install
+
+```bash
+uv tool install dpm-tool     # as a standalone tool
+# or, inside a project
+uv add dpm-tool
+```
+
+Requires Python ≥ 3.12.
+
+## Run
+
+```bash
+dpm-tool
+```
+
+This launches the **EIOPA DPM Toolkit** home screen. Navigate with the arrow
+keys, `Enter` to select, `Esc` to go back, `s` for settings, `q` to quit.
+
+---
 
 ## What it does
 
-Two scripts are provided:
+The home screen exposes five workflows:
 
-- `dpm_delta.py`: compares two EIOPA DPM Excel workbooks and creates `Delta_DPM.xlsx`.
-- `xbrl_apply_delta.py`: applies that delta to an XBRL file and writes a new updated XBRL file.
+| Screen | What it does |
+| --- | --- |
+| **⇩ DPM Ingest** | Parse an EIOPA annotated-templates workbook into a versioned local database (`db/versions/<version>.duckdb`). |
+| **Δ DPM Delta** | Compare two ingested versions and export a reviewable delta workbook (`Delta_DPM.xlsx`). |
+| **⇄ XBRL Apply Delta** | Roll the delta between two versions forward onto an XBRL instance, writing a new file (the input is never modified). |
+| **⌕ Explore Database** | Browse an ingested DPM database — templates, metrics, dimensions and their members. |
+| **≠ Explore Delta** | Browse the computed changes between two versions interactively. |
 
-The input XBRL is never modified.
+### Typical flow
 
----
-
-## Setup
-
-```bash
-uv sync
-```
-
----
-
-## 1. Create the DPM delta
-
-```bash
-uv run python dpm_delta.py OLD_DPM.xlsx NEW_DPM.xlsx Delta_DPM.xlsx
-```
-
-Example:
-
-```bash
-uv run python dpm_delta.py \
-  EIOPA_DPM_2.8.2.xlsx \
-  EIOPA_DPM_2.10.0.xlsx \
-  Delta_DPM.xlsx
-```
-
-The script detects available perimeters from `Table of Contents` and asks you to select them.
-
-To skip selection and compare all perimeters:
-
-```bash
-uv run python dpm_delta.py OLD_DPM.xlsx NEW_DPM.xlsx Delta_DPM.xlsx --no-interactive-perimeters
-```
-
-Useful option:
-
-```bash
---log-level DEBUG
-```
+1. **Add the versions you track** in **Settings** (`s`). The tool can download
+   the official workbooks straight from EIOPA, or you can supply an explicit URL
+   for the odd hotfix build.
+2. **Ingest** the old and new workbooks into versioned databases.
+3. **Delta** the two versions to review what changed, or **Apply Delta** to
+   update your XBRL instances.
 
 ---
 
-## 2. Apply the delta to an XBRL file
+## How the XBRL update works
 
-```bash
-uv run python xbrl_apply_delta.py Delta_DPM.xlsx input.xbrl output.xbrl
-```
+When applying a delta to an XBRL instance:
 
-Example:
+- **Deleted** metric — matching facts are removed.
+- **Modified** metric with a changed QName — the fact tag is renamed.
+- **Added** metric — ignored (no value or context can be inferred).
+- **Kept** metric — left unchanged.
 
-```bash
-uv run python xbrl_apply_delta.py \
-  Delta_DPM.xlsx \
-  report_before.xbrl \
-  report_after.xbrl
-```
-
-The perimeter is detected from the XBRL `schemaRef`, for example:
-
-```xml
-<link:schemaRef xlink:href=".../mod/qrs.xsd" />
-```
-
-Force a perimeter if needed:
-
-```bash
-uv run python xbrl_apply_delta.py Delta_DPM.xlsx input.xbrl output.xbrl --perimeter qrs
-```
-
-Dry run:
-
-```bash
-uv run python xbrl_apply_delta.py Delta_DPM.xlsx input.xbrl output.xbrl --dry-run
-```
-
-Export flattened facts for debugging:
-
-```bash
-uv run python xbrl_apply_delta.py \
-  Delta_DPM.xlsx input.xbrl output.xbrl \
-  --facts-parquet facts_debug.parquet
-```
+The perimeter is auto-detected from the instance's `schemaRef`
+(e.g. `.../mod/qrs.xsd` → `qrs`) and can be overridden. A dry-run mode reports
+what *would* change without writing output.
 
 ---
 
-## What happens to XBRL facts
+## Data & config layout
 
-- `Deleted` metric: matching facts are removed.
-- `Modified` metric with changed QName: fact tag is renamed.
-- `Added` metric: ignored because no value/context can be inferred.
-- `Kept` metric: unchanged.
+| Path | Contents |
+| --- | --- |
+| `db/versions/` | Ingested DPM version databases (DuckDB). |
+| `db/delta/` | Cached delta databases computed between two versions. |
+| `data/downloads/` | Source workbooks downloaded from EIOPA. |
+| `dpm-tool.config.json` | Tracked versions and the selected UI theme. |
 
 ---
 
-## Typical full run
+## Development
 
 ```bash
-uv run python dpm_delta.py OLD_DPM.xlsx NEW_DPM.xlsx Delta_DPM.xlsx
-
-uv run python xbrl_apply_delta.py \
-  Delta_DPM.xlsx \
-  input.xbrl \
-  output.xbrl
+uv sync          # install with dev dependencies
+uv run dpm-tool  # run from source
+uv run pytest    # run the test suite
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

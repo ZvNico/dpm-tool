@@ -9,8 +9,32 @@ uv.lock
 
 # Virtual environments
 .venv
-data/input/private/
 
-# agents
+# Agents
 .claude/
 graphify-out/
+
+# Build artifacts
+*.egg-info/
+
+# Test cache
+.pytest_cache/
+
+# office lock files
+*~lock.*
+
+# Ruff cache
+.ruff_cache/
+
+# DuckDB version cache files
+db/
+
+# app config + downloaded source workbooks
+dpm-tool.config.json
+michael.config.json
+data/downloads/
+
+
+# Media files
+*.xlsx
+*.pdf

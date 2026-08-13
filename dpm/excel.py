@@ -1,34 +1,25 @@
 from __future__ import annotations
 
+import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 import polars as pl
-from openpyxl import Workbook
-from openpyxl.styles import Font
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.worksheet import Worksheet
-from tqdm import tqdm
+import xlsxwriter
+from xlsxwriter.utility import xl_col_to_name
 
-from dpm._constants import (
-    ADDED_FILL,
-    BORDER,
-    DELTA_COLS,
-    DELETED_FILL,
-    HEADER_FILL,
-    KEPT_FILL,
-    MODIFIED_FILL,
-)
-
-_STATUS_COL_IDX = DELTA_COLS.index("Status")
+from dpm._types import DeltaResult
 from dpm.delta import generate_summary
+from dpm.delta_schema import DIMENSION_XLSX, METRIC_XLSX, STRUCTURE_XLSX
 
-_STATUS_FILL = {
-    "Added": ADDED_FILL,
-    "Deleted": DELETED_FILL,
-    "Modified": MODIFIED_FILL,
-    "Kept": KEPT_FILL,
-}
+LOG = logging.getLogger(__name__)
+
+_CLR_HEADER = "#D9EAF7"
+_CLR_BORDER = "#B7B7B7"
+_CLR_ADDED = "#C6EFCE"
+_CLR_DELETED = "#FFC7CE"
+_CLR_MODIFIED = "#FCE4D6"
 
 
 def _safe_sheet_name(name: str, used: set[str]) -> str:
@@ -43,53 +34,159 @@ def _safe_sheet_name(name: str, used: set[str]) -> str:
     return candidate
 
 
-def _apply_formatting(ws: Worksheet) -> None:
-    ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
-    for cell in ws[1]:
-        cell.font = Font(bold=True)
-        cell.fill = HEADER_FILL
-        cell.border = BORDER
-    for row in ws.iter_rows():
-        status = row[_STATUS_COL_IDX].value if row[0].row > 1 and len(row) > _STATUS_COL_IDX else None
-        fill = _STATUS_FILL.get(status, KEPT_FILL)
-        for cell in row:
-            cell.border = BORDER
-            if cell.row > 1:
-                cell.fill = fill
-    for col_idx, col in enumerate(ws.columns, start=1):
-        width = min(
-            80,
-            max(10, max(len(str(c.value)) if c.value is not None else 0 for c in col) + 2),
-        )
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
+def _write_status_sheet(
+    wb,
+    name: str,
+    df: pl.DataFrame,
+    hmap: dict[str, str],
+    hdr_fmt,
+    cell_fmt,
+    cf_fmts: dict[str, object],
+) -> None:
+    """Write one Added/Deleted/Modified sheet: header, widths, streamed rows, colours.
+
+    ``hmap`` maps canonical (snake_case) delta columns → PascalCase display headers;
+    it must contain a ``status`` column, whose ``"Status"`` header drives row colour.
+    """
+    src_cols = list(hmap.keys())
+    headers = list(hmap.values())
+    n_cols = len(headers)
+    last_col = xl_col_to_name(n_cols - 1)
+    status_letter = xl_col_to_name(headers.index("Status"))
+    n_rows = df.height
+
+    ws = wb.add_worksheet(name)
+    ws.freeze_panes(1, 0)
+    ws.autofilter(0, 0, max(n_rows, 1), n_cols - 1)
+
+    # Column widths from Polars — set before writing rows (required for constant_memory mode)
+    for col, (src, header) in enumerate(zip(src_cols, headers)):
+        max_data = int(df[src].cast(pl.String).str.len_chars().max() or 0)
+        ws.set_column(col, col, min(80, max(10, max(max_data, len(header)) + 2)))
+
+    for col, header in enumerate(headers):
+        ws.write(0, col, header, hdr_fmt)
+
+    # Data rows — streamed directly to the zip, no in-memory DOM
+    for row_idx, row in enumerate(df.select(src_cols).iter_rows(named=False), 1):
+        ws.write_row(row_idx, 0, row, cell_fmt)
+
+    # Status fills as conditional-format rules — O(1) XML, Excel evaluates at open time
+    if n_rows:
+        cf_range = f"A2:{last_col}{n_rows + 1}"
+        for status, fmt in cf_fmts.items():
+            ws.conditional_format(
+                cf_range,
+                {
+                    "type": "formula",
+                    "criteria": f'=${status_letter}2="{status}"',
+                    "format": fmt,
+                },
+            )
 
 
-def generate_delta_workbook(delta: pl.DataFrame, output_path: Path) -> None:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Summary"
-    summary = generate_summary(delta)
-    ws.append(list(summary.keys()))
-    ws.append(list(summary.values()))
-    for cell in ws[2]:
-        if isinstance(cell.value, float):
-            cell.number_format = "0.00%"
-    _apply_formatting(ws)
+def generate_delta_workbook(
+    delta: DeltaResult,
+    output_path: Path,
+    on_sheet: Callable[[int, int, str], None] | None = None,
+) -> None:
+    wb = xlsxwriter.Workbook(str(output_path), {"constant_memory": True})
+
+    hdr_fmt = wb.add_format(
+        {
+            "bold": True,
+            "bg_color": _CLR_HEADER,
+            "border": 1,
+            "border_color": _CLR_BORDER,
+        }
+    )
+    cell_fmt = wb.add_format({"border": 1, "border_color": _CLR_BORDER})
+    pct_fmt = wb.add_format(
+        {"num_format": "0.00%", "border": 1, "border_color": _CLR_BORDER}
+    )
+    cf_fmts = {
+        "Added": wb.add_format(
+            {"bg_color": _CLR_ADDED, "border": 1, "border_color": _CLR_BORDER}
+        ),
+        "Deleted": wb.add_format(
+            {"bg_color": _CLR_DELETED, "border": 1, "border_color": _CLR_BORDER}
+        ),
+        "Modified": wb.add_format(
+            {"bg_color": _CLR_MODIFIED, "border": 1, "border_color": _CLR_BORDER}
+        ),
+    }
+
+    structure = delta.structure
+    perimeters = (
+        sorted(structure.get_column("perimeter").unique().to_list())
+        if not structure.is_empty()
+        else []
+    )
+    # Metrics + Dimensions + one sheet per perimeter (Summary is not counted).
+    total_sheets = 2 + len(perimeters)
+    written = 0
+
+    def announce(name: str) -> None:
+        nonlocal written
+        written += 1
+        LOG.debug("Writing sheet %d/%d: %s", written, total_sheets, name)
+        if on_sheet is not None:
+            on_sheet(written, total_sheets, name)
+
+    # ── Summary sheet ──────────────────────────────────────────────────────
+    summary = generate_summary(structure)
+    keys, vals = list(summary.keys()), list(summary.values())
+    ws = wb.add_worksheet("Summary")
+    ws.freeze_panes(1, 0)
+    ws.autofilter(0, 0, 1, len(keys) - 1)
+    for col, k in enumerate(keys):
+        ws.set_column(col, col, max(14, len(k) + 2))
+        ws.write(0, col, k, hdr_fmt)
+    for col, v in enumerate(vals):
+        ws.write(1, col, v, pct_fmt if isinstance(v, float) else cell_fmt)
 
     used: set[str] = {"Summary"}
-    if not delta.is_empty():
-        for perimeter in tqdm(
-            sorted(delta.get_column("Perimeter").unique().to_list()),
-            desc="Writing delta workbook",
-            unit="sheet",
-        ):
-            ws = wb.create_sheet(_safe_sheet_name(str(perimeter), used))
-            ws.append(DELTA_COLS)
-            subset = delta.filter(pl.col("Perimeter") == perimeter).sort(
-                ["ChangeType", "TemplateCode", "SubTemplateCode", "RowCode", "ColumnCode", "Status"]
-            )
-            for row in subset.iter_rows(named=False):
-                ws.append(list(row))
-            _apply_formatting(ws)
-    wb.save(output_path)
+
+    # ── Metrics + Dimensions delta sheets ──────────────────────────────────
+    announce("Metrics")
+    _write_status_sheet(
+        wb, "Metrics", delta.metrics, METRIC_XLSX, hdr_fmt, cell_fmt, cf_fmts
+    )
+    used.add("Metrics")
+
+    announce("Dimensions")
+    _write_status_sheet(
+        wb,
+        "Dimensions",
+        delta.dimensions,
+        DIMENSION_XLSX,
+        hdr_fmt,
+        cell_fmt,
+        cf_fmts,
+    )
+    used.add("Dimensions")
+
+    # ── Per-perimeter structure sheets ─────────────────────────────────────
+    for perimeter in perimeters:
+        announce(str(perimeter))
+        subset = structure.filter(pl.col("perimeter") == perimeter).sort(
+            [
+                "change_type",
+                "template_code",
+                "subtemplate_code",
+                "row_code",
+                "column_code",
+                "status",
+            ]
+        )
+        _write_status_sheet(
+            wb,
+            _safe_sheet_name(str(perimeter), used),
+            subset,
+            STRUCTURE_XLSX,
+            hdr_fmt,
+            cell_fmt,
+            cf_fmts,
+        )
+
+    wb.close()

@@ -1,0 +1,55 @@
+MainScreen {
+    align: center middle;
+}
+
+#home {
+    width: 60;
+    height: auto;
+    padding: 1 0;
+}
+
+/* ── hero ──────────────────────────────────────────────────────────── */
+#hero {
+    height: auto;
+    padding: 1 2;
+    margin-bottom: 1;
+    border: round $primary;
+    background: $boost;
+}
+#brand {
+    width: 100%;
+    text-align: center;
+    text-style: bold;
+    color: $primary;
+}
+#tagline {
+    width: 100%;
+    text-align: center;
+    color: $text-muted;
+}
+
+/* ── action menu ───────────────────────────────────────────────────── */
+#menu {
+    height: auto;
+}
+.action {
+    width: 100%;
+    height: 4;
+    margin-bottom: 1;
+    padding: 0 1;
+    content-align: left middle;
+    text-align: left;
+    border: none;
+    border-left: thick $panel;
+    background: $surface;
+    color: $text;
+}
+.action:hover {
+    border-left: thick $accent;
+    background: $surface-lighten-1;
+}
+.action:focus {
+    border-left: thick $primary;
+    background: $surface-lighten-1;
+    text-style: none;
+}

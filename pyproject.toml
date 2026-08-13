@@ -1,13 +1,56 @@
 [project]
-name = "michael"
+name = "dpm-tool"
 version = "0.1.0"
-description = "Add your description here"
+description = "Textual TUI for EIOPA Solvency II DPM: ingest annotated-templates workbooks, diff versions, and roll deltas onto XBRL instances."
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "ZvNico", email = "nicolas.baconnier@efrei.net" }]
+keywords = ["eiopa", "solvency-ii", "dpm", "xbrl", "regulatory-reporting", "tui"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3",
+    "Topic :: Office/Business :: Financial",
+]
 dependencies = [
+    "duckdb>=1.1.0",
     "lxml>=6.1.1",
     "openpyxl>=3.1.5",
     "polars>=1.42.1",
-    "questionary>=2.1.1",
-    "tqdm>=4.69.0",
+    "pyarrow>=25.0.0",
+    "textual>=0.80.0",
+    "textual-fspicker>=1.0.1",
+    "xlsxwriter>=3.2.0",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+include = ["dpm*"]
+
+[tool.setuptools.package-data]
+dpm = ["ui/*.tcss"]
+
+[tool.setuptools]
+py-modules = ["app"]
+
+[project.urls]
+Homepage = "https://github.com/ZvNico/michael"
+Repository = "https://github.com/ZvNico/michael"
+Issues = "https://github.com/ZvNico/michael/issues"
+
+[project.scripts]
+dpm-tool = "app:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+

@@ -3,7 +3,17 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from dpm._constants import CODE_RE, COL_RE, METRIC_LABEL_RE, QNAME_RE, QNAME_TOKEN_RE, ROW_RE
+from dpm._constants import (
+    CODE_RE,
+    COL_RE,
+    DIM_DECL_RE,
+    MEMBER_RE,
+    METRIC_LABEL_RE,
+    PAREN_LABEL_RE,
+    QNAME_RE,
+    QNAME_TOKEN_RE,
+    ROW_RE,
+)
 
 
 def norm(value: object) -> str:
@@ -30,6 +40,31 @@ def extract_metric_label(text: str) -> str:
 def is_qname(text: str) -> bool:
     text = norm(text)
     return bool(extract_qname(text) or QNAME_RE.search(text))
+
+
+def extract_paren_label(text: str) -> str:
+    match = PAREN_LABEL_RE.search(norm(text))
+    return match.group(1).strip() if match else ""
+
+
+def extract_dimension_token(text: str) -> str:
+    """Return the full 's2c_dim:XX' declaration token, or ''."""
+    match = DIM_DECL_RE.search(norm(text))
+    return match.group(0) if match else ""
+
+
+def is_dimension_decl(text: str) -> bool:
+    return bool(DIM_DECL_RE.search(norm(text)))
+
+
+def extract_member_token(text: str) -> str:
+    """Return the full 's2c_XX:xN' member token, or ''."""
+    match = MEMBER_RE.search(norm(text))
+    return match.group(0) if match else ""
+
+
+def is_member(text: str) -> bool:
+    return bool(MEMBER_RE.search(norm(text)))
 
 
 def nearest_text(values: Iterable[str]) -> str:
