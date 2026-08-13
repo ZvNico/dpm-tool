@@ -175,22 +175,33 @@ def load_structure_for_perimeter(path: Path, perimeter: str) -> pl.DataFrame:
 
 def load_delta_tree(
     path: Path,
-) -> list[tuple[str, list[tuple[str, list[tuple[str, dict[str, int]]]]]]]:
+) -> list[
+    tuple[str, list[tuple[str, str, list[tuple[str, str, dict[str, int]]]]]]
+]:
     """Nested change tree: perimeter → template → subtemplate with status counts.
 
-    Only subtemplates carrying real changes (``Status <> 'Kept'``) are included,
-    so the tree shows the delta rather than the whole model. Shape mirrors the
-    DB explorer's ``load_db_tree``: ``[(perimeter, [(template_code,
-    [(subtemplate_code, {status: n}), ...])])]``.
+    Only nodes carrying real changes (``Status <> 'Kept'``) are included, so the
+    tree shows the delta rather than the whole model. Each template and
+    subtemplate carries a ``struct_status`` string: ``"Added"`` / ``"Deleted"``
+    when the whole node was added or deleted between versions (a ``Template`` /
+    ``SubTemplate`` marker row exists for it), or ``""`` when it merely has
+    internal cell changes.
+
+    Marker rows are *not* counted into the per-status ``counts`` (those reflect
+    only real cell changes, matching what ``load_cell_changes`` shows), so a
+    fully-added subtemplate is signalled by ``struct_status="Added"`` plus the
+    counts of its added cells. Shape: ``[(perimeter, [(template_code,
+    struct_status, [(subtemplate_code, struct_status, {status: n}), ...])])]``.
     """
     conn = duckdb.connect(str(path), read_only=True)
     try:
         rows = conn.execute(
             f"""
-            SELECT perimeter, template_code, subtemplate_code, status, count(*) AS n
+            SELECT perimeter, template_code, subtemplate_code, type, status,
+                   count(*) AS n
             FROM {_STRUCTURE}
-            WHERE status <> 'Kept' AND subtemplate_code <> ''
-            GROUP BY perimeter, template_code, subtemplate_code, status
+            WHERE status <> 'Kept'
+            GROUP BY perimeter, template_code, subtemplate_code, type, status
             ORDER BY perimeter, template_code, subtemplate_code
             """
         ).fetchall()
@@ -199,26 +210,42 @@ def load_delta_tree(
 
     tree: list[tuple[str, list]] = []
     perim_idx: dict[str, list] = {}
+    # template entry: [t_code, struct_status, subs];  sub entry: [s_code, struct_status, counts]
     tmpl_idx: dict[tuple[str, str], list] = {}
-    sub_idx: dict[tuple[str, str, str], dict[str, int]] = {}
-    for perim, t_code, s_code, status, n in rows:
+    sub_idx: dict[tuple[str, str, str], list] = {}
+    for perim, t_code, s_code, type_, status, n in rows:
         templates = perim_idx.get(perim)
         if templates is None:
             templates = []
             perim_idx[perim] = templates
             tree.append((perim, templates))
-        subs = tmpl_idx.get((perim, t_code))
-        if subs is None:
-            subs = []
-            tmpl_idx[(perim, t_code)] = subs
-            templates.append((t_code, subs))
-        counts = sub_idx.get((perim, t_code, s_code))
-        if counts is None:
-            counts = {}
-            sub_idx[(perim, t_code, s_code)] = counts
-            subs.append((s_code, counts))
-        counts[status] = n
-    return tree
+        tmpl = tmpl_idx.get((perim, t_code))
+        if tmpl is None:
+            tmpl = [t_code, "", []]
+            tmpl_idx[(perim, t_code)] = tmpl
+            templates.append(tmpl)
+        if type_ == "Template":
+            tmpl[1] = status
+            continue
+        sub = sub_idx.get((perim, t_code, s_code))
+        if sub is None:
+            sub = [s_code, "", {}]
+            sub_idx[(perim, t_code, s_code)] = sub
+            tmpl[2].append(sub)
+        if type_ == "SubTemplate":
+            sub[1] = status
+            continue
+        sub[2][status] = sub[2].get(status, 0) + n
+    return [
+        (
+            perim,
+            [
+                (t[0], t[1], [(s[0], s[1], s[2]) for s in t[2]])
+                for t in templates
+            ],
+        )
+        for perim, templates in tree
+    ]
 
 
 def load_cell_changes(path: Path, perimeter: str, subtemplate_code: str) -> pl.DataFrame:
@@ -233,6 +260,7 @@ def load_cell_changes(path: Path, perimeter: str, subtemplate_code: str) -> pl.D
                    status, type
             FROM {_STRUCTURE}
             WHERE perimeter = ? AND subtemplate_code = ? AND status <> 'Kept'
+              AND type NOT IN ('Template', 'SubTemplate')
             ORDER BY type, row_code, column_code, status
             """,
             [perimeter, subtemplate_code],

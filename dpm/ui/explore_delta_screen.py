@@ -48,6 +48,11 @@ _STATUS_STYLE = {"Added": "green", "Modified": "dark_orange", "Deleted": "red"}
 # Status → single-char badge used on tree labels, e.g. "[+2 ~3 -1]".
 _BADGE = {"Added": "+", "Modified": "~", "Deleted": "-"}
 
+def _node_color(struct_status: str) -> str:
+    """Tree node-text color: a wholly added/deleted node takes its structural
+    status color (green/red); a node with only internal changes reads as orange."""
+    return _STATUS_STYLE.get(struct_status or "Modified", "")
+
 
 def _merge(old, new) -> str:
     """Collapse an old/new value pair into one cell (``old → new`` when both differ)."""
@@ -88,9 +93,13 @@ def _counts_str(counts: dict[str, int]) -> str:
     return "  ".join(parts) if parts else "no changes"
 
 
-def _badge(counts: dict[str, int]) -> str:
-    parts = [f"{sym}{counts[s]}" for s, sym in _BADGE.items() if counts.get(s)]
-    return f"[dim]\\[{' '.join(parts)}][/dim]" if parts else ""
+def _sum_counts(dicts) -> dict[str, int]:
+    """Element-wise sum of several ``{status: n}`` dicts (roll-up totals)."""
+    total: dict[str, int] = {}
+    for d in dicts:
+        for status, n in d.items():
+            total[status] = total.get(status, 0) + n
+    return total
 
 
 def _colored_badge(counts: dict[str, int]) -> Text:
@@ -104,6 +113,24 @@ def _colored_badge(counts: dict[str, int]) -> Text:
             out.append(" ")
         out.append(f"{sym}{n}", style=_STATUS_STYLE[status])
     return out
+
+
+def _tree_label(
+    text: str, counts: dict[str, int], *, bold: bool = False, color: str = ""
+) -> Text:
+    """Node label: code plus a bracketed, per-status colored change badge.
+
+    ``color`` styles the code text itself — red when the node was wholly
+    added/deleted (structural), orange when it only has internal changes.
+    """
+    style = " ".join(s for s in (("bold" if bold else ""), color) if s)
+    label = Text(text, style=style)
+    badge = _colored_badge(counts)
+    if badge:
+        label.append("  [")
+        label.append_text(badge)
+        label.append("]")
+    return label
 
 
 def _parse_dims(serialized: str) -> dict[str, str]:
@@ -331,14 +358,25 @@ class ExploreDeltaScreen(Screen):
         widget.clear()
         widget.root.expand()
         for perim, templates in tree:
-            p_node = widget.root.add(f"[b]{perim}[/b]", expand=False)
-            for t_code, subs in templates:
-                t_node = p_node.add(t_code, expand=False)
-                for s_code, counts in subs:
-                    badge = _badge(counts)
-                    label = f"{s_code}  {badge}" if badge else s_code
+            perim_total = _sum_counts(
+                counts for _, _, subs in templates for _, _, counts in subs
+            )
+            p_node = widget.root.add(
+                _tree_label(perim, perim_total, bold=True), expand=False
+            )
+            for t_code, t_struct, subs in templates:
+                tmpl_total = _sum_counts(counts for _, _, counts in subs)
+                t_node = p_node.add(
+                    _tree_label(t_code, tmpl_total, color=_node_color(t_struct)),
+                    expand=False,
+                )
+                for s_code, s_struct, counts in subs:
+                    s_color = _node_color(s_struct)
                     # Leaf carries (perimeter, subtemplate_code) for the detail query.
-                    t_node.add_leaf(label, data=(perim, s_code))
+                    t_node.add_leaf(
+                        _tree_label(s_code, counts, color=s_color),
+                        data=(perim, s_code),
+                    )
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         node: TreeNode = event.node
@@ -390,7 +428,10 @@ class ExploreDeltaScreen(Screen):
         new = _parse_dims(row.get("dimensions_new", ""))
         for dim in sorted(set(old) | set(new)):
             o, n = old.get(dim, ""), new.get(dim, "")
-            style = _STATUS_STYLE.get(_member_status(o, n), "")
+            # Only added/deleted/edited dimensions are colored; unchanged (o == n)
+            # ones stay default even though both sides are populated.
+            status = _member_status(o, n) if o != n else ""
+            style = _STATUS_STYLE.get(status, "")
             table.add_row(Text(dim, style=style), Text(_merge(o, n), style=style))
 
     # ── Metrics / Dimensions tabs ───────────────────────────────────────────

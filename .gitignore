@@ -12,8 +12,6 @@ uv.lock
 
 # Agents
 .claude/
-graphify-out/
-.graphifyignore
 
 # Build artifacts
 *.egg-info/
@@ -32,8 +30,6 @@ db/
 
 # app config + downloaded source workbooks
 dpm-tool.config.json
-michael.config.json
-data/downloads/
 
 
 # Media files
