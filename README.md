@@ -71,12 +71,18 @@ what *would* change without writing output.
 
 ## Data & config layout
 
+Data and config live in per-user platform directories so the tool works from any
+working directory (`~/.local/share/dpm-tool` and `~/.config/dpm-tool` on Linux;
+the OS-appropriate equivalents on macOS/Windows).
+
 | Path | Contents |
 | --- | --- |
-| `db/versions/` | Ingested DPM version databases (DuckDB). |
-| `db/delta/` | Cached delta databases computed between two versions. |
-| `data/downloads/` | Source workbooks downloaded from EIOPA. |
-| `dpm-tool.config.json` | Tracked versions and the selected UI theme. |
+| `<data>/db/versions/` | Ingested DPM version databases (DuckDB). |
+| `<data>/db/delta/` | Cached delta databases computed between two versions. |
+| `<data>/downloads/` | Source workbooks downloaded from EIOPA. |
+| `<config>/config.json` | Tracked versions and the selected UI theme. |
+
+Set `DPM_TOOL_HOME` to override the root and keep everything under one directory.
 
 ---
 

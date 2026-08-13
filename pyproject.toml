@@ -1,6 +1,6 @@
 [project]
 name = "dpm-tool"
-version = "0.1.0"
+version = "0.1.1"
 description = "Textual TUI for EIOPA Solvency II DPM: ingest annotated-templates workbooks, diff versions, and roll deltas onto XBRL instances."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,6 +19,7 @@ dependencies = [
     "duckdb>=1.1.0",
     "lxml>=6.1.1",
     "openpyxl>=3.1.5",
+    "platformdirs>=4.0.0",
     "polars>=1.42.1",
     "pyarrow>=25.0.0",
     "textual>=0.80.0",

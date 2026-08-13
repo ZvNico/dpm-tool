@@ -1,18 +1,28 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
+import platformdirs
+
 # ── On-disk layout ──────────────────────────────────────────────────────────
-# All DuckDB artifacts live under a single root: ingested version databases in
-# ``db/versions`` and computed delta databases in ``db/delta``.
-DB_ROOT = Path("db")
+# Everything lives under per-user platform directories so the installed tool
+# works from any working directory. Override the root with the DPM_TOOL_HOME
+# environment variable (points both data and config at that path).
+_ENV_HOME = os.environ.get("DPM_TOOL_HOME")
+DATA_ROOT = Path(_ENV_HOME) if _ENV_HOME else Path(platformdirs.user_data_dir("dpm-tool"))
+_CONFIG_ROOT = Path(_ENV_HOME) if _ENV_HOME else Path(platformdirs.user_config_dir("dpm-tool"))
+
+# Ingested version databases in ``db/versions`` and computed delta databases in
+# ``db/delta``.
+DB_ROOT = DATA_ROOT / "db"
 VERSIONS_DIR = DB_ROOT / "versions"
 DELTA_DIR = DB_ROOT / "delta"
 
 # Downloaded source workbooks are cached here; app config lives at CONFIG_PATH.
-DOWNLOADS_DIR = Path("data/downloads")
-CONFIG_PATH = Path("dpm-tool.config.json")
+DOWNLOADS_DIR = DATA_ROOT / "downloads"
+CONFIG_PATH = _CONFIG_ROOT / "config.json"
 
 ROW_RE = re.compile(r"\b[A-Z]{0,3}R\d{3,6}\b", re.I)
 COL_RE = re.compile(r"\b[A-Z]{0,3}C\d{3,6}\b", re.I)
