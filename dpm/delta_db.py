@@ -165,7 +165,7 @@ def load_structure_for_perimeter(path: Path, perimeter: str) -> pl.DataFrame:
     try:
         return conn.execute(
             f"SELECT * FROM {_STRUCTURE} WHERE perimeter = ? "
-            "ORDER BY change_type, template_code, subtemplate_code, "
+            "ORDER BY type, template_code, subtemplate_code, "
             "row_code, column_code, status",
             [perimeter],
         ).pl()
@@ -230,10 +230,10 @@ def load_cell_changes(path: Path, perimeter: str, subtemplate_code: str) -> pl.D
             SELECT row_code, column_code, qname_old, qname_new,
                    metric_label_old, metric_label_new,
                    dimensions_old, dimensions_new,
-                   status, change_type
+                   status, type
             FROM {_STRUCTURE}
             WHERE perimeter = ? AND subtemplate_code = ? AND status <> 'Kept'
-            ORDER BY change_type, row_code, column_code, status
+            ORDER BY type, row_code, column_code, status
             """,
             [perimeter, subtemplate_code],
         ).pl()
@@ -245,16 +245,16 @@ def load_apply_changes(path: Path, perimeter: str) -> pl.DataFrame:
     """Metric-cell structure changes for one perimeter, for XBRL apply-delta.
 
     Returns just the columns apply-delta needs to delete/rename metric facts:
-    ``perimeter, change_type, status, qname_old, qname_new``.
+    ``perimeter, type, status, qname_old, qname_new``.
     """
     conn = duckdb.connect(str(path), read_only=True)
     try:
         return conn.execute(
             f"""
-            SELECT perimeter, change_type, status, qname_old, qname_new
+            SELECT perimeter, type, status, qname_old, qname_new
             FROM {_STRUCTURE}
             WHERE lower(perimeter) = lower(?)
-              AND change_type IN ('FactRow', 'FactColumn', 'FactMatrix')
+              AND type IN ('Row', 'Column', 'Matrix')
             """,
             [perimeter],
         ).pl()

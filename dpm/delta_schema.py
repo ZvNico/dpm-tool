@@ -28,7 +28,7 @@ DELTA_STRUCTURE_COLS = [
     "dimensions_old",
     "dimensions_new",
     "status",
-    "change_type",
+    "type",
 ]
 
 DELTA_METRIC_COLS = [
@@ -67,7 +67,7 @@ STRUCTURE_XLSX = {
     "dimensions_old": "DimensionsOld",
     "dimensions_new": "DimensionsNew",
     "status": "Status",
-    "change_type": "ChangeType",
+    "type": "Type",
 }
 
 METRIC_XLSX = {

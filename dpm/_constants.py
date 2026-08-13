@@ -44,7 +44,7 @@ METRIC_COLS = [
     "column_label",
 ]
 # Default single value column: a subtemplate whose only column is this is a plain
-# row list; any other column code makes it a row×column matrix (see change_type).
+# row list; any other column code makes it a row×column matrix (see type).
 DEFAULT_COLUMN_CODE = "C0010"
 KEY_COLS = ["perimeter", "template_code", "subtemplate_code", "row_code", "column_code"]
 IDENTITY_COLS = ["template_code", "subtemplate_code", "row_code", "column_code"]

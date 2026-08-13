@@ -72,12 +72,12 @@ def test_compare_dimensions_added_deleted_modified():
     assert out == {"x1": "Deleted", "x2": "Modified", "x3": "Added"}
 
 
-# ── change_type: row list vs matrix vs column ───────────────────────────────
+# ── type: row list vs matrix vs column ──────────────────────────────────────
 
 
-def test_change_type_row_matrix_column():
+def test_type_row_matrix_column():
     # S1 uses only C0010 → a plain row list; S2 also has C0020 → a matrix.
-    # A row-empty cell is always a FactColumn regardless of subtemplate.
+    # A row-empty cell is always a Column regardless of subtemplate.
     old = _dataset(
         [
             _metric_row("s2md_met:r1", subtemplate_code="S1", column_code="C0010"),
@@ -96,11 +96,11 @@ def test_change_type_row_matrix_column():
         ]
     )
     res = compare_versions(old, new)
-    by_qname = {r["qname_new"]: r["change_type"] for r in res.structure.to_dicts()}
-    assert by_qname["s2md_met:r1"] == "FactRow"
-    assert by_qname["s2md_met:m1"] == "FactMatrix"
-    assert by_qname["s2md_met:m2"] == "FactMatrix"
-    assert by_qname["s2md_met:c1"] == "FactColumn"
+    by_qname = {r["qname_new"]: r["type"] for r in res.structure.to_dicts()}
+    assert by_qname["s2md_met:r1"] == "Row"
+    assert by_qname["s2md_met:m1"] == "Matrix"
+    assert by_qname["s2md_met:m2"] == "Matrix"
+    assert by_qname["s2md_met:c1"] == "Column"
 
 
 # ── dimension-only fact change surfaces as Modified in the structure delta ───
@@ -111,7 +111,7 @@ def test_structure_modified_when_only_dimensions_change():
     new = _dataset([_metric_row("s2md_met:mi1", dimensions="d:BL=x2")])
     res = compare_versions(old, new)
     rows = res.structure.filter(
-        pl.col("change_type").is_in(["FactRow", "FactColumn", "FactMatrix"])
+        pl.col("type").is_in(["Row", "Column", "Matrix"])
     )
     assert rows.height == 1
     row = rows.to_dicts()[0]

@@ -33,15 +33,15 @@ def _row(cols: list[str], **kw: str) -> dict[str, str]:
 def _result() -> DeltaResult:
     structure = pl.DataFrame(
         [
-            # aeb row is a matrix cell (row + non-C0010 column) → FactMatrix,
+            # aeb row is a matrix cell (row + non-C0010 column) → Matrix,
             # which must still pass the apply-delta filter.
             _row(DELTA_STRUCTURE_COLS, perimeter="aeb", template_code="T1",
                  subtemplate_code="S1", row_code="R010", column_code="C020",
                  qname_old="a", qname_new="b", status="Modified",
-                 change_type="FactMatrix"),
+                 type="Matrix"),
             _row(DELTA_STRUCTURE_COLS, perimeter="aes", template_code="T2",
                  subtemplate_code="S2", row_code="", column_code="C020",
-                 qname_old="x", status="Deleted", change_type="FactColumn"),
+                 qname_old="x", status="Deleted", type="Column"),
         ],
         schema={c: pl.String for c in DELTA_STRUCTURE_COLS},
     )
@@ -97,11 +97,11 @@ def test_catalogue_and_roundtrip(tmp_path: Path):
 def test_load_apply_changes(tmp_path: Path):
     path = _saved(tmp_path)
     # Case-insensitive perimeter match; fact-cell changes returned, including
-    # FactMatrix cells.
+    # Matrix cells.
     aeb = load_apply_changes(path, "AEB")
     assert aeb.height == 1
     row = aeb.to_dicts()[0]
-    assert row["change_type"] == "FactMatrix"
+    assert row["type"] == "Matrix"
     assert (row["status"], row["qname_old"], row["qname_new"]) == ("Modified", "a", "b")
     aes = load_apply_changes(path, "aes")
     assert aes.to_dicts()[0]["status"] == "Deleted"

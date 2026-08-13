@@ -62,24 +62,24 @@ def subtemplate_matrix_lookup(
     )
 
 
-def classify_change_type(
+def classify_type(
     metric_delta: pl.DataFrame, matrix_lookup: pl.DataFrame
 ) -> pl.DataFrame:
-    """Stamp the three-way fact-cell ``change_type`` onto delta rows.
+    """Stamp the three-way fact-cell ``type`` onto delta rows.
 
-    ``FactColumn`` when the cell has no row, ``FactMatrix`` when its subtemplate
-    is a matrix, else ``FactRow``.
+    ``Column`` when the cell has no row, ``Matrix`` when its subtemplate
+    is a matrix, else ``Row``.
     """
     if metric_delta.is_empty():
         return metric_delta
     joined = metric_delta.join(matrix_lookup, on=_SUBTEMPLATE_KEYS, how="left")
     return joined.with_columns(
         pl.when(pl.col("row_code") == "")
-        .then(pl.lit("FactColumn"))
+        .then(pl.lit("Column"))
         .when(pl.col("is_matrix").fill_null(False))
-        .then(pl.lit("FactMatrix"))
-        .otherwise(pl.lit("FactRow"))
-        .alias("change_type")
+        .then(pl.lit("Matrix"))
+        .otherwise(pl.lit("Row"))
+        .alias("type")
     ).drop("is_matrix")
 
 
@@ -113,7 +113,7 @@ def metric_status_df(
             .then(pl.lit("Modified"))
             .otherwise(pl.lit("Kept"))
             .alias("status"),
-            pl.lit("").alias("change_type"),
+            pl.lit("").alias("type"),
         ]
     )
     old_only = old.join(new.select(KEY_COLS), on=KEY_COLS, how="anti")
@@ -171,7 +171,7 @@ def qname_modified_df(
             pl.col("dimensions").alias("dimensions_old"),
             pl.col("dimensions_new").alias("dimensions_new"),
             pl.lit("Modified").alias("status"),
-            pl.lit("").alias("change_type"),
+            pl.lit("").alias("type"),
         ]
     )
     old_remove = changed.select(KEY_COLS)
@@ -219,7 +219,7 @@ def _side_df(df: pl.DataFrame, status: str) -> pl.DataFrame:
                     "dimensions_new"
                 ),
                 pl.lit(status).alias("status"),
-                pl.lit("").alias("change_type"),
+                pl.lit("").alias("type"),
             ]
         )
     )
@@ -236,7 +236,7 @@ def added_deleted_df(old_only: pl.DataFrame, new_only: pl.DataFrame) -> pl.DataF
 
 def _struct_rows(
     pairs: set[tuple[str, ...]],
-    change_type: str,
+    type_: str,
     status: str,
 ) -> list[dict[str, str]]:
     return [
@@ -257,7 +257,7 @@ def _struct_rows(
             "dimensions_old": "",
             "dimensions_new": "",
             "status": status,
-            "change_type": change_type,
+            "type": type_,
         }
         for pair in sorted(pairs)
     ]
@@ -411,14 +411,14 @@ def _structure_delta(
     _step("Added / deleted metrics…")
     added_deleted = added_deleted_df(old_remaining, new_remaining)
 
-    # Classify fact cells (FactRow / FactColumn / FactMatrix) once, using
+    # Classify fact cells (Row / Column / Matrix) once, using
     # the full-catalogue subtemplate lookup. Structural rows keep their own
-    # Template / SubTemplate change_type and are not reclassified.
+    # Template / SubTemplate type and are not reclassified.
     metric_frames = [
         df for df in [kept_modified, qname_modified, added_deleted] if df.height
     ]
     metric_delta = (
-        classify_change_type(pl.concat(metric_frames, how="vertical"), matrix_lookup)
+        classify_type(pl.concat(metric_frames, how="vertical"), matrix_lookup)
         if metric_frames
         else empty_delta_df()
     )
@@ -474,15 +474,15 @@ def generate_summary(delta: pl.DataFrame) -> dict[str, float]:
         return dict.fromkeys(_summary_keys(), 0.0)
 
     counts: dict[tuple[str, str], int] = {
-        (r["change_type"], r["status"]): r["len"]
-        for r in delta.group_by(["change_type", "status"]).len().to_dicts()
+        (r["type"], r["status"]): r["len"]
+        for r in delta.group_by(["type", "status"]).len().to_dicts()
     }
 
     def metric_count(status: str) -> int:
         return (
-            counts.get(("FactRow", status), 0)
-            + counts.get(("FactColumn", status), 0)
-            + counts.get(("FactMatrix", status), 0)
+            counts.get(("Row", status), 0)
+            + counts.get(("Column", status), 0)
+            + counts.get(("Matrix", status), 0)
         )
 
     out: dict[str, float] = {}

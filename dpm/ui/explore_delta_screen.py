@@ -34,7 +34,7 @@ from dpm.ui.delta_screen import SourceSelect
 from dpm.workflows import available_db_versions, ensure_delta_db, version_key
 
 # Merged display headers (Old/New collapsed into one column; Status → row color).
-_CELL_COLS = ("Row", "Col", "QName", "ChangeType")
+_CELL_COLS = ("Row", "Col", "QName", "Type")
 _CELLDIM_COLS = ("Dimension", "Member")
 _METRIC_COLS = ("MetricCode", "MetricLabel")
 # Dimensions tab is master-detail (like the DB explorer): a dimensions list on the
@@ -370,7 +370,7 @@ class ExploreDeltaScreen(Screen):
             for row in df.iter_rows(named=True):
                 cells = _styled_row(
                     row,
-                    ["row_code", "column_code", ("qname_old", "qname_new"), "change_type"],
+                    ["row_code", "column_code", ("qname_old", "qname_new"), "type"],
                     row.get("status", ""),
                 )
                 table.add_row(*cells, key=f"{row['row_code']}|{row['column_code']}")

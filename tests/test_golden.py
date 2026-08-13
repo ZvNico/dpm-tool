@@ -46,7 +46,7 @@ _SORT_COLS = [
     "row_code",
     "column_code",
     "status",
-    "change_type",
+    "type",
 ]
 
 

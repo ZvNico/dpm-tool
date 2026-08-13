@@ -171,7 +171,7 @@ def generate_delta_workbook(
         announce(str(perimeter))
         subset = structure.filter(pl.col("perimeter") == perimeter).sort(
             [
-                "change_type",
+                "type",
                 "template_code",
                 "subtemplate_code",
                 "row_code",
