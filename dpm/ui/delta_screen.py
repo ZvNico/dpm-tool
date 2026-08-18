@@ -8,7 +8,6 @@ from textual.screen import Screen
 from textual.widgets import (
     Button,
     Footer,
-    Input,
     Label,
     ProgressBar,
     RichLog,
@@ -17,10 +16,11 @@ from textual.widgets import (
 )
 from textual.widgets._select import SelectCurrent
 
-from dpm._constants import DELTA_DIR, VERSIONS_DIR
+from dpm._constants import DELTA_DIR, VERSIONS_DIR, resolve_output_path
 from dpm.ui.log_handler import RichLogHandler, attach, detach
 from dpm.workflows import (
     available_db_versions,
+    delta_output_name,
     ensure_delta_db,
     render_delta_xlsx,
     version_key,
@@ -70,8 +70,6 @@ class DeltaScreen(Screen):
             SourceSelect([], id="sel-old", prompt="Pick a DB version…"),
             Label("New version (ingested DB)"),
             SourceSelect([], id="sel-new", prompt="Pick a DB version…"),
-            Label("Output workbook"),
-            Input(id="inp-output", placeholder="Delta_DPM.xlsx", value="Delta_DPM.xlsx"),
             Horizontal(
                 Button("← Back", id="btn-back"),
                 Button("Run Delta", id="btn-run", variant="primary"),
@@ -159,9 +157,12 @@ class DeltaScreen(Screen):
             log.write("[red]Error: pick an ingested DB version for both old and new[/red]")
             return
         delta_dir = self._delta_dir()
-        output_path = Path(
-            self.query_one("#inp-output", Input).value.strip() or "Delta_DPM.xlsx"
+        # The delta always spans every perimeter in the two DBs, so the workbook
+        # is tagged ``_all``; it lands in the platform Downloads folder.
+        output_path = resolve_output_path(
+            delta_output_name([], all_selected=True), "Delta_Dpm_all.xlsx"
         )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
 
         self.query_one("#btn-run", Button).disabled = True
         handler = RichLogHandler(log)

@@ -24,6 +24,26 @@ DELTA_DIR = DB_ROOT / "delta"
 DOWNLOADS_DIR = DATA_ROOT / "downloads"
 CONFIG_PATH = _CONFIG_ROOT / "config.json"
 
+# User-facing exports (delta workbook, applied XBRL) default to the platform's
+# Downloads folder when the user gives a bare filename rather than a full path.
+OUTPUT_DIR = Path(_ENV_HOME) if _ENV_HOME else Path(platformdirs.user_downloads_dir())
+
+
+def resolve_output_path(value: str, default_name: str) -> Path:
+    """Resolve a user-entered output path for an export.
+
+    A bare filename (no directory component) lands in :data:`OUTPUT_DIR`; an
+    explicit relative or absolute path is honoured as typed. Blank falls back to
+    ``default_name`` in :data:`OUTPUT_DIR`.
+    """
+    text = value.strip()
+    if not text:
+        return OUTPUT_DIR / default_name
+    path = Path(text).expanduser()
+    if path.parent == Path("."):
+        return OUTPUT_DIR / path
+    return path
+
 ROW_RE = re.compile(r"\b[A-Z]{0,3}R\d{3,6}\b", re.I)
 COL_RE = re.compile(r"\b[A-Z]{0,3}C\d{3,6}\b", re.I)
 CODE_RE = re.compile(r"\b[A-Z]{1,3}\.(?:[0-9]{2}\.){1,6}[0-9]{2}\b", re.I)

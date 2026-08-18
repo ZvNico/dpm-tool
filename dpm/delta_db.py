@@ -272,14 +272,17 @@ def load_cell_changes(path: Path, perimeter: str, subtemplate_code: str) -> pl.D
 def load_apply_changes(path: Path, perimeter: str) -> pl.DataFrame:
     """Metric-cell structure changes for one perimeter, for XBRL apply-delta.
 
-    Returns just the columns apply-delta needs to delete/rename metric facts:
-    ``perimeter, type, status, qname_old, qname_new``.
+    Returns the columns apply-delta needs to patch the instance:
+    ``perimeter, type, status, qname_old, qname_new`` to delete/rename metric
+    facts, plus ``dimensions_old, dimensions_new`` (each a ``s2c_dim:XX=s2c_YY:zN;…``
+    string) to rewrite a fact's dimensional members when they were swapped.
     """
     conn = duckdb.connect(str(path), read_only=True)
     try:
         return conn.execute(
             f"""
-            SELECT perimeter, type, status, qname_old, qname_new
+            SELECT perimeter, type, status, qname_old, qname_new,
+                   dimensions_old, dimensions_new
             FROM {_STRUCTURE}
             WHERE lower(perimeter) = lower(?)
               AND type IN ('Row', 'Column', 'Matrix')

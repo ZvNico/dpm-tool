@@ -168,3 +168,5 @@ class ApplyStats:
     renamed_facts: int
     deleted_qnames: int
     modified_qnames: int
+    repointed_facts: int = 0
+    new_contexts: int = 0

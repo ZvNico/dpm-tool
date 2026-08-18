@@ -35,3 +35,4 @@ dpm-tool.config.json
 # Media files
 *.xlsx
 *.pdf
+*.xbrl

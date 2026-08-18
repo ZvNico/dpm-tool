@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -127,6 +127,18 @@ def load_perimeters(old_db: Path, new_db: Path) -> list[str]:
             conn.close()
 
     return sorted(perimeters(old_db) | perimeters(new_db))
+
+
+def delta_output_name(perimeters: Sequence[str], *, all_selected: bool) -> str:
+    """Filename for a delta workbook, encoding its perimeter coverage.
+
+    ``all_selected`` collapses to a single ``_all`` tag; otherwise each perimeter
+    is appended in lowercase, underscore-separated (e.g. ``Delta_Dpm_qrs_ars.xlsx``).
+    """
+    if all_selected:
+        return "Delta_Dpm_all.xlsx"
+    suffix = "_".join(sorted(p.lower() for p in perimeters))
+    return f"Delta_Dpm_{suffix}.xlsx"
 
 
 @dataclass(frozen=True)
@@ -342,7 +354,7 @@ def run_apply_delta(
     delta_dir: Path = DELTA_DIR,
     perimeter_override: str | None = None,
     dry_run: bool = False,
-    facts_parquet: Path | None = None,
+    debug_xlsx: Path | None = None,
     on_step: Callable[[str], None] | None = None,
 ) -> ApplyStats:
     """Apply the delta between two ingested DB versions to an XBRL file.
@@ -357,5 +369,5 @@ def run_apply_delta(
         output_xbrl=output_xbrl,
         perimeter_override=perimeter_override,
         dry_run=dry_run,
-        facts_parquet=facts_parquet,
+        debug_xlsx=debug_xlsx,
     )

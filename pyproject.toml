@@ -1,6 +1,6 @@
 [project]
 name = "dpm-tool"
-version = "0.1.1"
+version = "0.1.2"
 description = "Textual TUI for EIOPA Solvency II DPM: ingest annotated-templates workbooks, diff versions, and roll deltas onto XBRL instances."
 readme = "README.md"
 requires-python = ">=3.12"

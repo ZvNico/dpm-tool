@@ -9,7 +9,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Input, Label, RichLog, Select, Static
 from textual_fspicker import Filters
 
-from dpm._constants import VERSIONS_DIR
+from dpm._constants import VERSIONS_DIR, resolve_output_path
 from dpm.ui._utils import _XBRL_FILTERS, prompt_open_file
 from dpm.ui.delta_screen import SourceSelect
 from dpm.ui.log_handler import RichLogHandler, attach, detach
@@ -34,13 +34,9 @@ class ApplyScreen(Screen):
                 Button("Browse", id="btn-browse-xbrl", classes="browse"),
                 id="xbrl-row",
             ),
-            Label("Output XBRL"),
-            Input(id="inp-output-xbrl", placeholder="path/to/output.xbrl"),
             Label("Perimeter override (blank = auto-detect)"),
             Input(id="inp-perimeter", placeholder="e.g. qrs"),
-            Checkbox("Dry run (no file written)", id="chk-dry-run"),
-            Label("Facts parquet dump (optional)"),
-            Input(id="inp-facts-parquet", placeholder="facts.parquet"),
+            Checkbox("Debug (write fact-level Excel dump)", id="chk-debug"),
             Horizontal(
                 Button("← Back", id="btn-back"),
                 Button("Run Apply Delta", id="btn-run", variant="primary"),
@@ -112,10 +108,8 @@ class ApplyScreen(Screen):
         old_db = self._db_path("old")
         new_db = self._db_path("new")
         input_xbrl_str = self.query_one("#inp-input-xbrl", Input).value.strip()
-        output_xbrl_str = self.query_one("#inp-output-xbrl", Input).value.strip()
         perimeter_str = self.query_one("#inp-perimeter", Input).value.strip() or None
-        dry_run = self.query_one("#chk-dry-run", Checkbox).value
-        facts_parquet_str = self.query_one("#inp-facts-parquet", Input).value.strip()
+        debug = self.query_one("#chk-debug", Checkbox).value
 
         if old_db is None or new_db is None:
             log.write("[red]Error: pick an ingested DB version for both old and new[/red]")
@@ -123,17 +117,25 @@ class ApplyScreen(Screen):
         if not input_xbrl_str:
             log.write("[red]Error: input XBRL path is required[/red]")
             return
-        if not output_xbrl_str:
-            log.write("[red]Error: output XBRL path is required[/red]")
-            return
 
         input_xbrl = Path(input_xbrl_str)
-        output_xbrl = Path(output_xbrl_str)
-        facts_parquet = Path(facts_parquet_str) if facts_parquet_str else None
+        # Output mirrors the input filename with a ``_patched`` suffix, in Downloads.
+        output_xbrl = resolve_output_path(
+            f"{input_xbrl.stem}_patched{input_xbrl.suffix}", "output_patched.xbrl"
+        )
+        # Optional fact-level Excel dump alongside it, ``_debug.xlsx``.
+        debug_xlsx = (
+            resolve_output_path(f"{input_xbrl.stem}_debug.xlsx", "output_debug.xlsx")
+            if debug
+            else None
+        )
 
         if not input_xbrl.exists():
             log.write(f"[red]Error: input XBRL not found: {input_xbrl}[/red]")
             return
+        output_xbrl.parent.mkdir(parents=True, exist_ok=True)
+        if debug_xlsx is not None:
+            debug_xlsx.parent.mkdir(parents=True, exist_ok=True)
 
         self.query_one("#btn-run", Button).disabled = True
 
@@ -148,11 +150,12 @@ class ApplyScreen(Screen):
                     input_xbrl,
                     output_xbrl,
                     perimeter_override=perimeter_str,
-                    dry_run=dry_run,
-                    facts_parquet=facts_parquet,
+                    debug_xlsx=debug_xlsx,
                 )
                 if self.is_mounted:
-                    self.app.call_from_thread(self._on_success, stats, dry_run)
+                    self.app.call_from_thread(
+                        self._on_success, stats, output_xbrl, debug_xlsx
+                    )
             except Exception as exc:
                 if self.is_mounted:
                     self.app.call_from_thread(self._on_error, exc)
@@ -161,18 +164,25 @@ class ApplyScreen(Screen):
 
         self.run_worker(worker, thread=True, name="apply-delta")
 
-    def _on_success(self, stats: object, dry_run: bool) -> None:
+    def _on_success(
+        self, stats: object, output_xbrl: Path, debug_xlsx: Path | None
+    ) -> None:
         if not self.is_mounted:
             return
         self.query_one("#btn-run", Button).disabled = False
         log = self.query_one("#log", RichLog)
-        dry_tag = " [yellow](dry run)[/yellow]" if dry_run else ""
+        debug_line = (
+            f"  debug dump [bold]{debug_xlsx}[/bold]\n" if debug_xlsx else ""
+        )
         log.write(
-            f"[green bold]Done!{dry_tag}[/green bold]\n"
+            f"[green bold]Done![/green bold]\n"
+            f"  written to [bold]{output_xbrl}[/bold]\n"
+            f"{debug_line}"
             f"  perimeter=[bold]{stats.perimeter}[/bold]\n"
             f"  facts before={stats.facts_before}  after={stats.facts_after}\n"
             f"  deleted={stats.deleted_facts}  renamed={stats.renamed_facts}\n"
-            f"  deleted qnames={stats.deleted_qnames}  modified qnames={stats.modified_qnames}"
+            f"  deleted qnames={stats.deleted_qnames}  modified qnames={stats.modified_qnames}\n"
+            f"  repointed facts={stats.repointed_facts}  new contexts={stats.new_contexts}"
         )
         self.notify("Apply complete", severity="information")
 
