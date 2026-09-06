@@ -4,7 +4,6 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
 from textual.widgets import (
     Button,
     Footer,
@@ -17,6 +16,7 @@ from textual.widgets import (
 from textual.widgets._select import SelectCurrent
 
 from dpm._constants import DELTA_DIR, VERSIONS_DIR, resolve_output_path
+from dpm.ui._utils import CopyScreen
 from dpm.ui.log_handler import RichLogHandler, attach, detach
 from dpm.workflows import (
     available_db_versions,
@@ -58,7 +58,7 @@ class SourceSelect(Select):
             self._show_placeholder()
 
 
-class DeltaScreen(Screen):
+class DeltaScreen(CopyScreen):
     CSS_PATH = "delta_screen.tcss"
 
     _versions: list[str] = []

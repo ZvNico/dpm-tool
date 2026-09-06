@@ -4,7 +4,6 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
 from textual.widgets import Button, Footer, Input, Label, ProgressBar, RichLog, Select, Static
 from textual import work
 
@@ -12,17 +11,13 @@ from collections.abc import Callable
 
 from dpm._constants import DOWNLOADS_DIR, VERSIONS_DIR
 from dpm.config import load_versions
-from dpm.eiopa import fetch_annotated_templates
-from dpm.ui._utils import OverrideDbModal, detect_version, prompt_open_xlsx
+from dpm.eiopa import fetch_dpm_database
+from dpm.ui._utils import CopyScreen, OverrideDbModal, detect_version, prompt_open_dpm_source
 from dpm.ui.log_handler import RichLogHandler, attach, detach
 from dpm.workflows import run_ingest
 
-_DB_STEPS = (
-    7  # templates, subtemplates, perimeters, perimeter_template, metrics, facts, commit
-)
 
-
-class IngestScreen(Screen):
+class IngestScreen(CopyScreen):
     CSS_PATH = "ingest_screen.tcss"
 
     # Last version value we auto-filled; lets us update on new file input
@@ -35,11 +30,11 @@ class IngestScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Vertical(
             Static("DPM Ingest", id="screen-title"),
-            Label("Configured version (auto-download)"),
+            Label("Configured version (download DPM database)"),
             Select([], id="sel-configured", prompt="Pick a configured version…"),
-            Label("Or a workbook (.xlsx)"),
+            Label("Or a DPM database file (.db)"),
             Horizontal(
-                Input(id="inp-file", placeholder="path/to/workbook.xlsx"),
+                Input(id="inp-file", placeholder="path/to/EIOPA_..._DPM_Database.db"),
                 Button("Browse", id="btn-browse-file", classes="browse"),
                 id="file-row",
             ),
@@ -56,7 +51,7 @@ class IngestScreen(Screen):
                     Static("", id="step-detail"),
                     id="step-row",
                 ),
-                ProgressBar(id="progress-bar", total=None, show_eta=False),
+                ProgressBar(id="progress-bar", show_eta=False),
                 id="progress",
             ),
             id="form-panel",
@@ -94,7 +89,7 @@ class IngestScreen(Screen):
     async def _browse_file(self) -> None:
         current = self.query_one("#inp-file", Input).value.strip()
         start = str(Path(current).parent) if current else None
-        path = await prompt_open_xlsx(self, start)
+        path = await prompt_open_dpm_source(self, start)
         if path is not None:
             # Setting the value fires on_input_changed → version auto-detect.
             self.query_one("#inp-file", Input).value = str(path)
@@ -139,15 +134,15 @@ class IngestScreen(Screen):
                 )
                 return
             self.query_one("#inp-version", Input).value = version
-            self._confirm_and_run(version, lambda _step: file)
+            self._confirm_and_run(version, lambda _progress: file)
             return
 
         if isinstance(configured, str) and configured:
             url = self._configured_urls.get(configured)
             self._confirm_and_run(
                 configured,
-                lambda step, v=configured, u=url: fetch_annotated_templates(
-                    v, DOWNLOADS_DIR, url=u, on_step=step
+                lambda progress, v=configured, u=url: fetch_dpm_database(
+                    v, DOWNLOADS_DIR, url=u, on_progress=progress
                 ),
             )
             return
@@ -158,12 +153,15 @@ class IngestScreen(Screen):
 
     @work
     async def _confirm_and_run(
-        self, version: str, resolve_file: Callable[[Callable[[str], None]], Path]
+        self,
+        version: str,
+        resolve_file: Callable[[Callable[[int, int | None, str], None]], Path],
     ) -> None:
         """Prompt to override an existing DB for this version, then start ingest.
 
         ``resolve_file`` yields the workbook path inside the worker (it may
-        download); it receives a step callback for progress messages.
+        download); it receives a progress callback ``(done, total, label)`` used
+        to drive the bar during the download/extraction it performs.
         """
         log = self.query_one("#log", RichLog)
         db_path = VERSIONS_DIR / f"{version}.duckdb"
@@ -182,6 +180,7 @@ class IngestScreen(Screen):
         self.query_one("#btn-run", Button).disabled = True
         self._set_step("Preparing…", "")
         self.query_one("#progress").display = True
+        # Indeterminate "preparing" state; real total arrives with the first event.
         self.query_one("#progress-bar", ProgressBar).update(total=None, progress=0)
         self._run_ingest(resolve_file, version, VERSIONS_DIR)
 
@@ -191,18 +190,22 @@ class IngestScreen(Screen):
         self.query_one("#step-label", Static).update(label)
         self.query_one("#step-detail", Static).update(detail)
 
-    def _init_bar(self, total: int) -> None:
-        self.query_one("#progress-bar", ProgressBar).update(total=total, progress=0)
+    def _on_progress(self, done: int, total: int | None, label: str) -> None:
+        """Drive the bar from a ``(done, total, label)`` event on the UI thread.
 
-    def _advance(self, label: str, detail: str = "") -> None:
+        ``total=None`` leaves the bar indeterminate (unmeasurable steps); otherwise
+        the bar fills and ``#step-detail`` shows a phase-agnostic percentage.
+        """
+        bar = self.query_one("#progress-bar", ProgressBar)
+        bar.update(total=total, progress=done)
+        detail = f"{done * 100 // total}%" if total else ""
         self._set_step(label, detail)
-        self.query_one("#progress-bar", ProgressBar).advance(1)
 
     # ── worker ─────────────────────────────────────────────────────────────
 
     def _run_ingest(
         self,
-        resolve_file: Callable[[Callable[[str], None]], Path],
+        resolve_file: Callable[[Callable[[int, int | None, str], None]], Path],
         version: str,
         db_dir: Path,
     ) -> None:
@@ -211,35 +214,16 @@ class IngestScreen(Screen):
         attach(handler)
 
         cft = self.app.call_from_thread
-        bar_initialized = False
 
-        def on_sheet(idx: int, total: int, name: str) -> None:
-            nonlocal bar_initialized
-            if not bar_initialized:
-                cft(self._init_bar, 2 + total + _DB_STEPS)
-                cft(self._advance, "Reading table of contents…")
-                bar_initialized = True
-            cft(self._advance, f"Parsing sheet {idx}/{total}", name)
-
-        def on_step(label: str) -> None:
-            nonlocal bar_initialized
-            if not bar_initialized:
-                # no template sheets — initialize bar now
-                cft(self._init_bar, 2 + _DB_STEPS)
-                cft(self._advance, "Reading table of contents…")
-                bar_initialized = True
-            cft(self._advance, label)
-
-        def fetch_step(label: str) -> None:
-            # Download/resolve messages arrive before the bar exists.
-            cft(self._set_step, label, "")
+        def on_progress(done: int, total: int | None, label: str) -> None:
+            # Marshalled to the UI thread; drives the determinate bar. The download
+            # (dominant phase) reports bytes; ingest reports its step counts.
+            cft(self._on_progress, done, total, label)
 
         def worker() -> None:
             try:
-                file = resolve_file(fetch_step)
-                stats = run_ingest(
-                    file, version, db_dir, on_sheet=on_sheet, on_step=on_step
-                )
+                file = resolve_file(on_progress)
+                stats = run_ingest(file, version, db_dir, on_progress=on_progress)
                 if self.is_mounted:
                     cft(self._on_success, stats)
             except Exception as exc:
@@ -256,7 +240,10 @@ class IngestScreen(Screen):
         if not self.is_mounted:
             return
         self.query_one("#btn-run", Button).disabled = False
-        self._set_step("Done!", "")
+        bar = self.query_one("#progress-bar", ProgressBar)
+        if bar.total is not None:
+            bar.update(progress=bar.total)
+        self._set_step("Done!", "100%")
         self.query_one("#log", RichLog).write(
             f"[green]Done![/green] Saved to [bold]{stats['db_path']}[/bold]\n"
             f"  templates={stats['templates']}  perimeters={stats['perimeters']}"

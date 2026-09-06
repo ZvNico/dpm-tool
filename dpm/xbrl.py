@@ -8,7 +8,11 @@ from typing import NamedTuple
 import polars as pl
 
 from dpm._types import ApplyStats
-from dpm.delta_db import load_apply_changes
+from dpm.delta_db import (
+    load_apply_changes,
+    load_apply_context,
+    load_datapoint_changes,
+)
 
 LOG = logging.getLogger(__name__)
 
@@ -53,6 +57,9 @@ CONTEXT_RE = re.compile(
 )
 # ``contextRef="cN"`` on a fact's opening tag.
 CONTEXT_REF_RE = re.compile(r"\bcontextRef\s*=\s*(['\"])(?P<ref>.*?)\1")
+# Same, over raw bytes — used to scan the whole patched document for every context
+# consumer (metric facts, filing indicators, footnotes, …) when pruning orphans.
+CONTEXT_REF_BYTES_RE = re.compile(rb"\bcontextRef\s*=\s*(['\"])(?P<ref>.*?)\1")
 # The closing root element (``</xbrli:xbrl>``); new contexts are spliced in before it.
 ROOT_CLOSE_RE = re.compile(rb"</(?:[A-Za-z_][A-Za-z0-9_.-]*:)?xbrl\s*>")
 # The closing scenario element, where cloned explicit members are injected.
@@ -87,43 +94,171 @@ def detect_perimeter_from_xml_bytes(xml: bytes) -> str:
     return unique[0]
 
 
-def build_delta_maps(delta: pl.DataFrame) -> tuple[pl.DataFrame, pl.DataFrame]:
+MemberSet = frozenset[tuple[str, str]]  # a set of (dimension, member) tokens
+
+# A cell's *fixed* signature: the closed, non-default members that pin it down. A
+# dimension can be an open axis in one table yet a fixed key member in another (e.g.
+# ``TB`` is free-form in most tables but fixed to ``s2c_LB:x28`` in S.27.03.01.01), so a
+# single global "open dimension" strip cannot canonicalise a fact — matching is per cell.
+FixedSet = frozenset[tuple[str, str]]
+
+
+class DpsDelta(NamedTuple):
+    """The delta indexed by metric for exact, per-cell fixed-signature matching.
+
+    Each map is ``metric qname → candidate cells``. ``survivor`` lists the fixed-member
+    sets of every cell present in the *new* version (from Kept/Added/Modified rows) — a
+    fact matching one still exists and is left untouched, even if its cell moved row/column.
+    ``modified`` links an old cell's fixed set to its successor ``(new qname, new fixed
+    set)``. ``deleted`` lists old fixed sets with no successor. A fact is matched to the
+    *most specific* (largest) candidate whose fixed members it contains, with any extra
+    members lying only on open axes — see :func:`_match_fixed`.
+    """
+
+    survivor: dict[str, list[FixedSet]]
+    modified: dict[str, list[tuple[FixedSet, str, FixedSet]]]
+    deleted: dict[str, list[FixedSet]]
+
+
+def _match_fixed(
+    candidates: list[FixedSet],
+    members: frozenset[tuple[str, str]],
+    open_dimensions: frozenset[str],
+) -> FixedSet | None:
+    """The most specific candidate fixed set a fact's members satisfy, or ``None``.
+
+    A candidate matches when all its fixed members are present and every *extra* member
+    the fact carries sits on an open axis (the free-form values, e.g. currencies, that
+    the model signature wildcards). The largest matching candidate wins so a fact lands
+    on its true cell rather than a less specific one that merely shares a prefix.
+    """
+    best: FixedSet | None = None
+    for fixed in candidates:
+        if fixed <= members and all(
+            dim in open_dimensions for dim, _ in (members - fixed)
+        ):
+            if best is None or len(fixed) > len(best):
+                best = fixed
+    return best
+
+
+def build_dps_delta(delta: pl.DataFrame) -> DpsDelta:
+    """Index per-cell structure changes by metric for exact apply.
+
+    Each row carries a cell's old/new metric qname and its closed non-default member
+    string (``dimensions_old``/``dimensions_new``) — that pair *is* the old/new fixed
+    signature. Survivors are gathered from the whole *new* side (Kept/Added/Modified) so a
+    fact is kept whenever its signature still exists in the new version, including when its
+    cell merely moved row/column (which the coordinate-keyed delta reports as a Deleted old
+    cell plus an Added new one). Keying on the fixed signature, not the metric qname alone,
+    is what makes apply exact — a metric deleted at one cell but surviving at another no
+    longer wipes every fact of it. A modified link with a conflicting target is dropped.
+    """
+    survivor: dict[str, set[FixedSet]] = {}
+    modified: dict[str, dict[FixedSet, tuple[str, FixedSet]]] = {}
+    conflicts: dict[str, set[FixedSet]] = {}
+    deleted: dict[str, set[FixedSet]] = {}
     if delta.is_empty():
-        return (
-            pl.DataFrame(schema={"qname": pl.String}),
-            pl.DataFrame(schema={"qname": pl.String, "qname_new": pl.String}),
-        )
+        return DpsDelta({}, {}, {})
 
-    deleted = (
-        delta.filter(
-            (pl.col("status") == "Deleted")
-            & ((pl.col("qname_old") != "") | (pl.col("qname_new") != ""))
-        )
-        .with_columns(
-            pl.when(pl.col("qname_old") != "")
-            .then(pl.col("qname_old"))
-            .otherwise(pl.col("qname_new"))
-            .alias("qname")
-        )
-        .select("qname")
-        .unique()
+    for row in delta.iter_rows(named=True):
+        status = row.get("status")
+        qname_old = row.get("qname_old") or ""
+        qname_new = row.get("qname_new") or ""
+        old_fixed = _dimensions_set(row.get("dimensions_old") or "")
+        new_fixed = _dimensions_set(row.get("dimensions_new") or "")
+        if qname_new and status in ("Kept", "Added", "Modified"):
+            survivor.setdefault(qname_new, set()).add(new_fixed)
+        if status == "Deleted" and qname_old:
+            deleted.setdefault(qname_old, set()).add(old_fixed)
+        elif (
+            status == "Modified"
+            and qname_old
+            and qname_new
+            and (qname_old, old_fixed) != (qname_new, new_fixed)
+        ):
+            target = (qname_new, new_fixed)
+            existing = modified.setdefault(qname_old, {}).get(old_fixed)
+            if existing is not None and existing != target:
+                conflicts.setdefault(qname_old, set()).add(old_fixed)
+            else:
+                modified[qname_old][old_fixed] = target
+
+    # Drop conflicting modified links, then let survival win over transform/removal.
+    for qname, keys in conflicts.items():
+        for key in keys:
+            modified.get(qname, {}).pop(key, None)
+    for qname, survivors in survivor.items():
+        mod = modified.get(qname)
+        if mod:
+            for key in survivors:
+                mod.pop(key, None)
+        dele = deleted.get(qname)
+        if dele:
+            dele -= survivors
+    for qname, mod in modified.items():
+        dele = deleted.get(qname)
+        if dele:
+            dele -= mod.keys()
+
+    return DpsDelta(
+        {q: list(s) for q, s in survivor.items()},
+        {q: [(k, *v) for k, v in m.items()] for q, m in modified.items() if m},
+        {q: list(s) for q, s in deleted.items() if s},
     )
-    modified = (
-        delta.filter(
-            (pl.col("status") == "Modified")
-            & (pl.col("qname_old") != "")
-            & (pl.col("qname_new") != "")
-            & (pl.col("qname_old") != pl.col("qname_new"))
-        )
-        .select(
-            [pl.col("qname_old").alias("qname"), pl.col("qname_new").alias("qname_new")]
-        )
-        .unique(subset=["qname"], keep="first")
-    )
-    return deleted, modified
 
 
-MemberSet = frozenset  # frozenset[tuple[str, str]] of (dimension, member) tokens
+def dps_delta_to_rows(perimeter: str, dps: DpsDelta) -> list[dict[str, str]]:
+    """Flatten a resolved :class:`DpsDelta` into ``datapoint_changes`` rows.
+
+    Persisted at delta-build time (per perimeter) so apply loads the resolved index
+    directly — see :func:`rows_to_dps_delta` for the inverse.
+    """
+    rows: list[dict[str, str]] = []
+    for qname, fixeds in dps.survivor.items():
+        rows += [
+            {"perimeter": perimeter, "qname": qname, "role": "survivor",
+             "fixed": _format_members(fixed), "target_qname": "", "target_fixed": ""}
+            for fixed in fixeds
+        ]
+    for qname, entries in dps.modified.items():
+        rows += [
+            {"perimeter": perimeter, "qname": qname, "role": "modified",
+             "fixed": _format_members(old_fixed), "target_qname": new_qname,
+             "target_fixed": _format_members(new_fixed)}
+            for old_fixed, new_qname, new_fixed in entries
+        ]
+    for qname, fixeds in dps.deleted.items():
+        rows += [
+            {"perimeter": perimeter, "qname": qname, "role": "deleted",
+             "fixed": _format_members(fixed), "target_qname": "", "target_fixed": ""}
+            for fixed in fixeds
+        ]
+    return rows
+
+
+def rows_to_dps_delta(rows: pl.DataFrame) -> DpsDelta:
+    """Reassemble a :class:`DpsDelta` from persisted ``datapoint_changes`` rows.
+
+    The rows are already resolved (survival-wins, conflicts dropped) at build time, so
+    this is a plain regroup — no re-derivation.
+    """
+    survivor: dict[str, list[FixedSet]] = {}
+    modified: dict[str, list[tuple[FixedSet, str, FixedSet]]] = {}
+    deleted: dict[str, list[FixedSet]] = {}
+    for row in rows.iter_rows(named=True):
+        qname = row["qname"]
+        fixed = _dimensions_set(row.get("fixed") or "")
+        role = row["role"]
+        if role == "survivor":
+            survivor.setdefault(qname, []).append(fixed)
+        elif role == "modified":
+            modified.setdefault(qname, []).append(
+                (fixed, row.get("target_qname") or "", _dimensions_set(row.get("target_fixed") or ""))
+            )
+        elif role == "deleted":
+            deleted.setdefault(qname, []).append(fixed)
+    return DpsDelta(survivor, modified, deleted)
 
 
 def _dimensions_set(spec: str) -> frozenset[tuple[str, str]]:
@@ -139,91 +274,6 @@ def _dimensions_set(spec: str) -> frozenset[tuple[str, str]]:
 def _format_members(members: frozenset[tuple[str, str]]) -> str:
     """Render a ``(dim, member)`` set as a sorted ``s2c_dim:XX=s2c_YY:zN; …`` string."""
     return "; ".join(f"{dim}={member}" for dim, member in sorted(members))
-
-
-_FACT_DETAIL_SCHEMA = {
-    "qname": pl.String,
-    "qname_new": pl.String,
-    "context_ref": pl.String,
-    "dimensions": pl.String,
-    "value": pl.String,
-}
-
-
-def _fact_detail_frame(
-    subset: pl.DataFrame, ctx_members: dict[str, str]
-) -> pl.DataFrame:
-    """Per-fact debug rows: qname, its rename target, context, dimensions, value.
-
-    ``subset`` is a slice of the flagged facts frame; ``ctx_members`` maps a context id
-    to its rendered dimension string. Kept tiny — only changed facts flow through here.
-    """
-    rows: list[dict[str, str]] = []
-    for fact in subset.iter_rows(named=True):
-        ref_match = CONTEXT_REF_RE.search(str(fact["attributes"]))
-        ref = ref_match.group("ref") if ref_match else ""
-        rows.append(
-            {
-                "qname": str(fact["qname"]),
-                "qname_new": str(fact.get("qname_out") or fact["qname"]),
-                "context_ref": ref,
-                "dimensions": ctx_members.get(ref, ""),
-                "value": str(fact["value"]),
-            }
-        )
-    return pl.DataFrame(rows, schema=_FACT_DETAIL_SCHEMA)
-
-
-ContextRemap = dict[
-    str, list[tuple[frozenset[tuple[str, str]], frozenset[tuple[str, str]]]]
-]
-
-
-def build_context_remap(delta: pl.DataFrame) -> ContextRemap:
-    """Map each metric qname to its ``(old dims, new dims)`` cell changes.
-
-    Each structure ``Modified`` row is a cell whose dimensional signature changed. The
-    delta records only the dimensions the template *varies* — an instance context also
-    carries implicit/default members (e.g. ``s2c_dim:VG=s2c_AM:x80``) that the delta omits
-    — so matching is by **subset**: a change applies to a fact whose context is a superset
-    of ``old_set`` (see :func:`apply_context_remap`). Returned as ``{qname: [(old_set,
-    new_set), …]}`` sorted by descending ``old_set`` size, so the most specific matching
-    cell wins. A ``(qname, old_set)`` yielding two distinct targets is dropped with a
-    warning (that key is a proven function over the real delta).
-    """
-    if delta.is_empty() or "dimensions_old" not in delta.columns:
-        return {}
-
-    per_key: dict[tuple[str, frozenset[tuple[str, str]]], frozenset[tuple[str, str]]] = {}
-    conflicts: set[tuple[str, frozenset[tuple[str, str]]]] = set()
-    for row in delta.iter_rows(named=True):
-        if row.get("status") != "Modified":
-            continue
-        old_spec = row.get("dimensions_old") or ""
-        new_spec = row.get("dimensions_new") or ""
-        qname = row.get("qname_old") or ""
-        if not qname or not old_spec or not new_spec or old_spec == new_spec:
-            continue
-        old_set = _dimensions_set(old_spec)
-        new_set = _dimensions_set(new_spec)
-        if old_set == new_set:
-            continue
-        key = (qname, old_set)
-        if key in per_key and per_key[key] != new_set:
-            conflicts.add(key)
-            LOG.warning("Conflicting context remap for qname=%s; dropping key", qname)
-            continue
-        per_key[key] = new_set
-
-    for key in conflicts:
-        per_key.pop(key, None)
-
-    remap: ContextRemap = {}
-    for (qname, old_set), new_set in per_key.items():
-        remap.setdefault(qname, []).append((old_set, new_set))
-    for changes in remap.values():
-        changes.sort(key=lambda pair: len(pair[0]), reverse=True)
-    return remap
 
 
 class _ContextInfo(NamedTuple):
@@ -278,16 +328,6 @@ def _clone_context(
     return cloned
 
 
-class ContextRemapResult(NamedTuple):
-    xml: bytes
-    repointed_facts: int
-    new_contexts: int
-    # One row per re-pointed fact: qname, context_old, context_new, dimensions_old/new, value.
-    repoint_details: pl.DataFrame
-    # One row per created context: context_id, dimensions, cloned_from.
-    new_context_details: pl.DataFrame
-
-
 _REPOINT_SCHEMA = {
     "qname": pl.String,
     "context_old": pl.String,
@@ -301,137 +341,8 @@ _NEW_CONTEXT_SCHEMA = {
     "dimensions": pl.String,
     "cloned_from": pl.String,
 }
-
-
-def _match_context_change(
-    changes: list[tuple[frozenset[tuple[str, str]], frozenset[tuple[str, str]]]],
-    members: frozenset[tuple[str, str]],
-) -> frozenset[tuple[str, str]] | None:
-    """Resolve a fact's new dimensional context, or ``None`` if nothing applies.
-
-    ``changes`` are ``(old_set, new_set)`` cell changes for the fact's qname, ordered by
-    descending ``old_set`` size. The most specific cell whose ``old_set`` is a subset of
-    the fact's ``members`` and actually changes it wins; only the dimensions it names are
-    rewritten, the rest of the context is kept: ``new = (members - old_set) | new_set``.
-    No-op candidates (whose target equals the current context — the fact already reflects
-    them) are skipped so a real change on a less specific cell is not masked.
-    """
-    for old_set, new_set in changes:
-        if old_set <= members:
-            target = (members - old_set) | new_set
-            if target != members:
-                return target
-    return None
-
-
-def apply_context_remap(xml: bytes, remap: ContextRemap) -> ContextRemapResult:
-    """Re-point facts whose ``(qname, dimensional context)`` changed between versions.
-
-    Contexts are shared and the mapping is qname-dependent, so a fact is moved onto a
-    context carrying the new member set — reusing an existing matching context or cloning
-    one — rather than editing the shared context in place (which would corrupt the other
-    metrics on it). Returns the patched bytes, the re-point / new-context counts, and
-    per-fact / per-new-context detail frames.
-    """
-    if not remap:
-        return ContextRemapResult(
-            xml, 0, 0,
-            pl.DataFrame(schema=_REPOINT_SCHEMA),
-            pl.DataFrame(schema=_NEW_CONTEXT_SCHEMA),
-        )
-
-    contexts = parse_contexts(xml)
-    # signature (frame, member set) -> context id, seeded with the existing contexts so
-    # unchanged and target contexts are reused and never duplicated.
-    sig_to_id: dict[tuple[bytes, frozenset[tuple[str, str]]], str] = {}
-    for cid, info in contexts.items():
-        sig_to_id.setdefault((info.frame, info.members), cid)
-
-    used_ids = set(contexts)
-    counter = 0
-
-    def _fresh_id() -> str:
-        nonlocal counter
-        while True:
-            counter += 1
-            candidate = f"cdpm{counter}"
-            if candidate not in used_ids:
-                used_ids.add(candidate)
-                return candidate
-
-    new_blocks: list[bytes] = []
-    parts: list[bytes] = []
-    cursor = 0
-    repoint_rows: list[dict[str, str]] = []
-    new_context_rows: list[dict[str, str]] = []
-
-    facts = flatten_metric_facts(xml).sort("start")
-    for fact in facts.iter_rows(named=True):
-        attrs = str(fact["attributes"])
-        ref_match = CONTEXT_REF_RE.search(attrs)
-        if ref_match is None:
-            continue
-        ctx_ref = ref_match.group("ref")
-        info = contexts.get(ctx_ref)
-        if info is None:
-            continue
-        changes = remap.get(str(fact["qname"]))
-        if not changes:
-            continue
-        target = _match_context_change(changes, info.members)
-        if target is None:
-            continue
-
-        sig = (info.frame, target)
-        new_id = sig_to_id.get(sig)
-        if new_id is None:
-            new_id = _fresh_id()
-            new_blocks.append(b"  " + _clone_context(info.block, new_id, target) + b"\n")
-            sig_to_id[sig] = new_id
-            new_context_rows.append(
-                {
-                    "context_id": new_id,
-                    "dimensions": _format_members(target),
-                    "cloned_from": ctx_ref,
-                }
-            )
-
-        start, end = int(fact["start"]), int(fact["end"])
-        segment = re.sub(
-            rb"(\bcontextRef\s*=\s*['\"])" + re.escape(ctx_ref.encode()) + rb"(['\"])",
-            rb"\g<1>" + new_id.encode() + rb"\g<2>",
-            xml[start:end],
-            count=1,
-        )
-        parts.append(xml[cursor:start])
-        parts.append(segment)
-        cursor = end
-        repoint_rows.append(
-            {
-                "qname": str(fact["qname"]),
-                "context_old": ctx_ref,
-                "context_new": new_id,
-                "dimensions_old": _format_members(info.members),
-                "dimensions_new": _format_members(target),
-                "value": str(fact["value"]),
-            }
-        )
-
-    parts.append(xml[cursor:])
-    out = b"".join(parts)
-
-    if new_blocks:
-        roots = list(ROOT_CLOSE_RE.finditer(out))
-        insert_at = roots[-1].start() if roots else len(out)
-        out = out[:insert_at] + b"".join(new_blocks) + out[insert_at:]
-
-    return ContextRemapResult(
-        out,
-        len(repoint_rows),
-        len(new_blocks),
-        pl.DataFrame(repoint_rows, schema=_REPOINT_SCHEMA),
-        pl.DataFrame(new_context_rows, schema=_NEW_CONTEXT_SCHEMA),
-    )
+_DELETED_SCHEMA = {"qname": pl.String, "value": pl.String}
+_RENAMED_SCHEMA = {"qname": pl.String, "qname_new": pl.String, "value": pl.String}
 
 
 def flatten_metric_facts(xml: bytes) -> pl.DataFrame:
@@ -473,48 +384,19 @@ def flatten_metric_facts(xml: bytes) -> pl.DataFrame:
     )
 
 
-def flag_facts_with_delta(
-    facts: pl.DataFrame, deleted: pl.DataFrame, modified: pl.DataFrame
-) -> pl.DataFrame:
-    if facts.is_empty():
-        return facts.with_columns(
-            [
-                pl.lit(False).alias("delete_fact"),
-                pl.lit(False).alias("rename_fact"),
-                pl.col("qname").alias("qname_out"),
-            ]
-        )
-
-    result = facts
-    if deleted.is_empty():
-        result = result.with_columns(pl.lit(False).alias("delete_fact"))
-    else:
-        result = result.join(
-            deleted.with_columns(pl.lit(True).alias("delete_fact")),
-            on="qname",
-            how="left",
-        ).with_columns(pl.col("delete_fact").fill_null(False))
-
-    if modified.is_empty():
-        result = result.with_columns(pl.lit(None).cast(pl.String).alias("qname_new"))
-    else:
-        result = result.join(modified, on="qname", how="left")
-
-    return result.with_columns(
-        [
-            pl.col("qname_new").is_not_null().alias("rename_fact"),
-            pl.when(pl.col("qname_new").is_not_null())
-            .then(pl.col("qname_new"))
-            .otherwise(pl.col("qname"))
-            .alias("qname_out"),
-        ]
-    )
-
-
 def _rename_fact_bytes(segment: bytes, old_qname: str, new_qname: str) -> bytes:
     pattern = re.compile(rb"(<\/?)" + re.escape(old_qname.encode()) + rb"(\b)")
     return pattern.sub(
         lambda m: m.group(1) + new_qname.encode() + m.group(2), segment, count=2
+    )
+
+
+def _repoint_ref_bytes(segment: bytes, old_ref: str, new_ref: str) -> bytes:
+    return re.sub(
+        rb"(\bcontextRef\s*=\s*['\"])" + re.escape(old_ref.encode()) + rb"(['\"])",
+        rb"\g<1>" + new_ref.encode() + rb"\g<2>",
+        segment,
+        count=1,
     )
 
 
@@ -531,40 +413,91 @@ def _expand_deleted_span(xml: bytes, start: int, end: int) -> tuple[int, int]:
     return start, end
 
 
-def rebuild_xml_bytes(xml: bytes, facts: pl.DataFrame) -> bytes:
-    changed = (
-        facts.filter(pl.col("delete_fact") | pl.col("rename_fact"))
-        .select(["start", "end", "qname", "qname_out", "delete_fact", "rename_fact"])
-        .sort("start")
-        .to_dicts()
-    )
-    if not changed:
-        return xml
+def _prune_orphan_contexts(patched: bytes) -> tuple[bytes, list[str]]:
+    """Drop every ``<…:context>`` block no ``contextRef`` in the document points at.
 
+    Run on the fully patched output so it accounts for *all* consumers — metric facts,
+    filing indicators, footnotes, anything carrying a ``contextRef`` — not just the metric
+    facts the apply loop rewrites. Newly cloned contexts survive because the facts we just
+    re-pointed reference them. Whitespace around a removed block is swallowed via
+    :func:`_expand_deleted_span`, matching deleted-fact removal, so no blank line is left.
+    """
+    referenced = {
+        m.group("ref").decode("utf-8", errors="replace")
+        for m in CONTEXT_REF_BYTES_RE.finditer(patched)
+    }
+    removed_ids: list[str] = []
     parts: list[bytes] = []
     cursor = 0
-    for row in changed:
-        start, end = int(row["start"]), int(row["end"])
-        if row["delete_fact"]:
-            start, end = _expand_deleted_span(xml, start, end)
-            if end <= cursor:
-                continue
-            parts.append(xml[cursor : max(start, cursor)])
-            cursor = end
-        else:
-            if start < cursor:
-                raise ValueError("Overlapping metric fact matches detected")
-            parts.append(xml[cursor:start])
-            parts.append(
-                _rename_fact_bytes(
-                    xml[start:end], str(row["qname"]), str(row["qname_out"])
-                )
-                if row["rename_fact"]
-                else xml[start:end]
-            )
-            cursor = end
-    parts.append(xml[cursor:])
-    return b"".join(parts)
+    for match in CONTEXT_RE.finditer(patched):
+        cid = match.group("id").decode("utf-8", errors="replace")
+        if cid in referenced:
+            continue
+        start, end = _expand_deleted_span(patched, match.start(), match.end())
+        if start < cursor:
+            continue
+        parts.append(patched[cursor:start])
+        cursor = end
+        removed_ids.append(cid)
+    if not removed_ids:
+        return patched, []
+    parts.append(patched[cursor:])
+    return b"".join(parts), removed_ids
+
+
+class _FactDecision(NamedTuple):
+    """The resolved action for one instance fact against the DPS delta."""
+
+    delete: bool
+    new_qname: str  # unchanged qname when not renamed
+    new_members: frozenset[tuple[str, str]] | None  # target member set when re-pointed
+
+
+def _decide_fact(
+    qname: str,
+    members: frozenset[tuple[str, str]],
+    dps: DpsDelta,
+    open_dimensions: frozenset[str],
+    default_members: frozenset[str],
+) -> _FactDecision | None:
+    """Resolve a fact to keep (``None``) / delete / rename / re-point.
+
+    The fact's non-default members are matched, per cell, against the metric's candidate
+    fixed signatures (most-specific wins). Survival is checked first — a fact whose
+    signature still exists in the new version is left untouched — then a modified link
+    (rename/re-point), then deletion. An unmatched fact is kept: this exactness is what
+    stops one deleted cell from wiping every fact of a metric that survives elsewhere.
+    """
+    nd_members = frozenset(
+        (dim, member) for dim, member in members if member not in default_members
+    )
+    if _match_fixed(dps.survivor.get(qname, []), nd_members, open_dimensions) is not None:
+        return None
+
+    mod_candidates = dps.modified.get(qname, [])
+    best: tuple[FixedSet, str, FixedSet] | None = None
+    for old_fixed, new_qname, new_fixed in mod_candidates:
+        if old_fixed <= nd_members and all(
+            dim in open_dimensions for dim, _ in (nd_members - old_fixed)
+        ):
+            if best is None or len(old_fixed) > len(best[0]):
+                best = (old_fixed, new_qname, new_fixed)
+    if best is not None:
+        old_fixed, new_qname, new_fixed = best
+        target_members = (members - old_fixed) | new_fixed
+        renamed = new_qname != qname
+        repointed = target_members != members
+        if not renamed and not repointed:
+            return None
+        return _FactDecision(
+            delete=False,
+            new_qname=new_qname,
+            new_members=target_members if repointed else None,
+        )
+
+    if _match_fixed(dps.deleted.get(qname, []), nd_members, open_dimensions) is not None:
+        return _FactDecision(delete=True, new_qname=qname, new_members=None)
+    return None
 
 
 def apply_delta(
@@ -575,6 +508,14 @@ def apply_delta(
     dry_run: bool,
     debug_xlsx: Path | None,
 ) -> ApplyStats:
+    """Migrate an XBRL instance to the new taxonomy version via exact DPS matching.
+
+    Every metric fact is resolved to its canonical Data Point Signature and matched 1:1
+    against the delta — deleting only cells that truly disappeared, renaming metrics and
+    re-pointing dimensional contexts where the cell moved, and leaving everything else
+    untouched. Context re-points clone/reuse a context carrying the new member set rather
+    than editing the shared one in place.
+    """
     if output_xbrl.resolve() == input_xbrl.resolve():
         raise ValueError("Output path must be different from input XBRL path")
 
@@ -586,67 +527,161 @@ def apply_delta(
     )
     LOG.info("Detected perimeter: %s", perimeter)
 
-    delta = load_apply_changes(delta_path, perimeter)
-    deleted, modified = build_delta_maps(delta)
-    context_remap = build_context_remap(delta)
+    open_dimensions, default_members = load_apply_context(delta_path)
+    # Prefer the persisted DPS pivot; fall back to deriving it for pre-pivot delta DBs.
+    datapoint_changes = load_datapoint_changes(delta_path, perimeter)
+    dps = (
+        rows_to_dps_delta(datapoint_changes)
+        if datapoint_changes is not None
+        else build_dps_delta(load_apply_changes(delta_path, perimeter))
+    )
     LOG.info(
-        "Delta qnames: deleted=%d modified=%d; context remaps=%d",
-        deleted.height,
-        modified.height,
-        len(context_remap),
+        "DPS delta metrics: survivor=%d modified=%d deleted=%d (open dims=%d, default members=%d)",
+        len(dps.survivor),
+        len(dps.modified),
+        len(dps.deleted),
+        len(open_dimensions),
+        len(default_members),
     )
 
-    # Dimensional context re-pointing runs on the ORIGINAL xml — it matches facts by
-    # their original qname and context — before the qname delete/rename pass.
-    remap_result = apply_context_remap(xml, context_remap)
-    remapped = remap_result.xml
-    LOG.info(
-        "Re-pointed facts: %d; new contexts created: %d",
-        remap_result.repointed_facts,
-        remap_result.new_contexts,
-    )
+    contexts = parse_contexts(xml)
+    # signature (frame, member set) -> context id, seeded with existing contexts so a
+    # re-point target that already exists is reused rather than duplicated.
+    sig_to_id: dict[tuple[bytes, frozenset[tuple[str, str]]], str] = {}
+    for cid, info in contexts.items():
+        sig_to_id.setdefault((info.frame, info.members), cid)
+    used_ids = set(contexts)
+    counter = 0
 
-    facts = flatten_metric_facts(remapped)
+    def _fresh_id() -> str:
+        nonlocal counter
+        while True:
+            counter += 1
+            candidate = f"cdpm{counter}"
+            if candidate not in used_ids:
+                used_ids.add(candidate)
+                return candidate
+
+    facts = flatten_metric_facts(xml)
     LOG.info("Flattened metric facts: %d", facts.height)
 
-    flagged = flag_facts_with_delta(facts, deleted, modified)
-    deleted_facts = flagged.filter(pl.col("delete_fact")).height
-    renamed_facts = flagged.filter(
-        ~pl.col("delete_fact") & pl.col("rename_fact")
-    ).height
+    new_blocks: list[bytes] = []
+    parts: list[bytes] = []
+    cursor = 0
+    deleted_rows: list[dict[str, str]] = []
+    renamed_rows: list[dict[str, str]] = []
+    repoint_rows: list[dict[str, str]] = []
+    new_context_rows: list[dict[str, str]] = []
 
-    patched = rebuild_xml_bytes(remapped, flagged)
+    for fact in facts.iter_rows(named=True):
+        qname = str(fact["qname"])
+        attrs = str(fact["attributes"])
+        ref_match = CONTEXT_REF_RE.search(attrs)
+        ctx_ref = ref_match.group("ref") if ref_match else None
+        info = contexts.get(ctx_ref) if ctx_ref else None
+        members = info.members if info else frozenset()
 
+        decision = _decide_fact(qname, members, dps, open_dimensions, default_members)
+        if decision is None:
+            continue  # keep untouched — leave its bytes in place
+
+        start, end = int(fact["start"]), int(fact["end"])
+        if decision.delete:
+            d_start, d_end = _expand_deleted_span(xml, start, end)
+            if d_end <= cursor:
+                continue
+            parts.append(xml[cursor : max(d_start, cursor)])
+            cursor = d_end
+            deleted_rows.append({"qname": qname, "value": str(fact["value"])})
+            continue
+
+        segment = xml[start:end]
+        if decision.new_qname != qname:
+            segment = _rename_fact_bytes(segment, qname, decision.new_qname)
+            renamed_rows.append(
+                {
+                    "qname": qname,
+                    "qname_new": decision.new_qname,
+                    "value": str(fact["value"]),
+                }
+            )
+        if decision.new_members is not None and info is not None and ctx_ref:
+            sig = (info.frame, decision.new_members)
+            new_id = sig_to_id.get(sig)
+            if new_id is None:
+                new_id = _fresh_id()
+                new_blocks.append(
+                    b"  " + _clone_context(info.block, new_id, decision.new_members) + b"\n"
+                )
+                sig_to_id[sig] = new_id
+                new_context_rows.append(
+                    {
+                        "context_id": new_id,
+                        "dimensions": _format_members(decision.new_members),
+                        "cloned_from": ctx_ref,
+                    }
+                )
+            segment = _repoint_ref_bytes(segment, ctx_ref, new_id)
+            repoint_rows.append(
+                {
+                    "qname": decision.new_qname,
+                    "context_old": ctx_ref,
+                    "context_new": new_id,
+                    "dimensions_old": _format_members(members),
+                    "dimensions_new": _format_members(decision.new_members),
+                    "value": str(fact["value"]),
+                }
+            )
+
+        if start < cursor:
+            raise ValueError("Overlapping metric fact matches detected")
+        parts.append(xml[cursor:start])
+        parts.append(segment)
+        cursor = end
+
+    parts.append(xml[cursor:])
+    patched = b"".join(parts)
+
+    if new_blocks:
+        roots = list(ROOT_CLOSE_RE.finditer(patched))
+        insert_at = roots[-1].start() if roots else len(patched)
+        patched = patched[:insert_at] + b"".join(new_blocks) + patched[insert_at:]
+
+    patched, removed_context_ids = _prune_orphan_contexts(patched)
+
+    deleted_facts = len(deleted_rows)
     stats = ApplyStats(
         perimeter=perimeter,
         facts_before=facts.height,
         facts_after=facts.height - deleted_facts,
         deleted_facts=deleted_facts,
-        renamed_facts=renamed_facts,
-        deleted_qnames=deleted.height,
-        modified_qnames=modified.height,
-        repointed_facts=remap_result.repointed_facts,
-        new_contexts=remap_result.new_contexts,
+        renamed_facts=len(renamed_rows),
+        deleted_qnames=len(dps.deleted),
+        modified_qnames=len(dps.modified),
+        repointed_facts=len(repoint_rows),
+        new_contexts=len(new_blocks),
+        removed_contexts=len(removed_context_ids),
+    )
+    LOG.info(
+        "Applied: deleted=%d renamed=%d repointed=%d new_contexts=%d removed_contexts=%d",
+        deleted_facts,
+        len(renamed_rows),
+        len(repoint_rows),
+        len(new_blocks),
+        len(removed_context_ids),
     )
 
     if debug_xlsx:
         from dpm.excel import generate_apply_debug_workbook
 
         debug_xlsx.parent.mkdir(parents=True, exist_ok=True)
-        ctx_members = {
-            cid: _format_members(info.members)
-            for cid, info in parse_contexts(remapped).items()
-        }
         generate_apply_debug_workbook(
             debug_xlsx,
             stats=stats,
-            deleted=_fact_detail_frame(flagged.filter(pl.col("delete_fact")), ctx_members),
-            renamed=_fact_detail_frame(
-                flagged.filter(~pl.col("delete_fact") & pl.col("rename_fact")),
-                ctx_members,
-            ),
-            repointed=remap_result.repoint_details,
-            new_contexts=remap_result.new_context_details,
+            deleted=pl.DataFrame(deleted_rows, schema=_DELETED_SCHEMA),
+            renamed=pl.DataFrame(renamed_rows, schema=_RENAMED_SCHEMA),
+            repointed=pl.DataFrame(repoint_rows, schema=_REPOINT_SCHEMA),
+            new_contexts=pl.DataFrame(new_context_rows, schema=_NEW_CONTEXT_SCHEMA),
         )
         LOG.info("Debug workbook written to: %s", debug_xlsx)
 

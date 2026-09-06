@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 
 import platformdirs
@@ -44,23 +43,6 @@ def resolve_output_path(value: str, default_name: str) -> Path:
         return OUTPUT_DIR / path
     return path
 
-ROW_RE = re.compile(r"\b[A-Z]{0,3}R\d{3,6}\b", re.I)
-COL_RE = re.compile(r"\b[A-Z]{0,3}C\d{3,6}\b", re.I)
-CODE_RE = re.compile(r"\b[A-Z]{1,3}\.(?:[0-9]{2}\.){1,6}[0-9]{2}\b", re.I)
-QNAME_RE = re.compile(
-    r"(^\{[^}]+\}.+)|(^[A-Za-z_][\w.-]*:[A-Za-z_][\w.-]*$)"
-    r"|(^[A-Za-z_][\w.-]*\.[A-Za-z_][\w.-]*(?:\.[A-Za-z_][\w.-]*)+$)"
-)
-QNAME_TOKEN_RE = re.compile(r"\b(?:s2md_met|[A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*\b")
-METRIC_LABEL_RE = re.compile(r"Metric:\s*(.*?)(?:\)\s*(?:\[|$)|$)")
-# Dimension declaration, e.g. "s2c_dim:BL (Line of business [general])"
-DIM_DECL_RE = re.compile(r"\bs2c_dim:([A-Za-z0-9]+)\b", re.I)
-# Dimension member, e.g. "s2c_LB:x91 (Neither unit-linked ...)". Excludes the
-# `dim` domain so declarations are not mistaken for members.
-MEMBER_RE = re.compile(r"\bs2c_(?!dim:)([A-Za-z0-9]+):(x\d+)\b", re.I)
-# Trailing parenthetical label, e.g. "... (Line of business [general])"
-PAREN_LABEL_RE = re.compile(r"\((.*)\)\s*$")
-GENERIC_TOC_CODES = frozenset({"T99", "T.99", "T.99.99", "TOC", "TABLE OF CONTENTS"})
 
 METRIC_COLS = [
     "perimeter",
@@ -77,4 +59,3 @@ METRIC_COLS = [
 # row list; any other column code makes it a row×column matrix (see type).
 DEFAULT_COLUMN_CODE = "C0010"
 KEY_COLS = ["perimeter", "template_code", "subtemplate_code", "row_code", "column_code"]
-IDENTITY_COLS = ["template_code", "subtemplate_code", "row_code", "column_code"]

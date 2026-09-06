@@ -47,6 +47,20 @@ DELTA_DIMENSION_COLS = [
     "status",
 ]
 
+# ── Data-point (DPS) pivot — the apply-facing delta ───────────────────────────
+# The resolved, per-metric fixed-signature delta persisted so XBRL apply reads it
+# directly instead of re-deriving it from the cell-keyed ``structure_changes`` each
+# run. ``role`` is survivor | modified | deleted; ``fixed`` is the ``dim=member;…``
+# fixed-member signature (``target_*`` populated only for ``modified``).
+DATAPOINT_CHANGE_COLS = [
+    "perimeter",
+    "qname",
+    "role",
+    "fixed",
+    "target_qname",
+    "target_fixed",
+]
+
 # ── Excel presentation maps — canonical → PascalCase header (order-stable) ─────
 # Consumed only by dpm.excel when rendering the human-facing workbook.
 

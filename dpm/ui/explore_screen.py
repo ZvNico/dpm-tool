@@ -4,7 +4,6 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
 from textual.widgets import (
     Button,
     DataTable,
@@ -20,6 +19,7 @@ from textual.widgets import (
 from textual.widgets.tree import TreeNode
 
 from dpm._constants import VERSIONS_DIR
+from dpm.ui._utils import CopyScreen
 from dpm.ui.delta_screen import SourceSelect
 from dpm.workflows import (
     DbContents,
@@ -40,7 +40,11 @@ _STAT_LABELS = (
     ("dimension_members", "members"),
 )
 
-_FACT_COLUMNS = ("Row", "Col", "Row label", "Col label", "Metric", "Metric label")
+_FACT_COLUMNS = (
+    "Subtemplate", "Row", "Col", "Row label", "Col label", "Metric", "Metric label"
+)
+_FACT_COL_COLUMNS = ("Subtemplate", "Col", "Col label", "Cells")
+_FACT_ROW_COLUMNS = ("Subtemplate", "Row", "Row label", "Cells")
 _CONTEXT_COLUMNS = ("Dimension", "Dim label", "Member", "Member label")
 _METRIC_COLUMNS = ("Metric", "Label")
 _USAGE_COLUMNS = ("Subtemplate", "Row", "Col", "Row label", "Col label")
@@ -52,7 +56,7 @@ def _cells(row: tuple) -> tuple[str, ...]:
     return tuple(str(c) if c is not None else "" for c in row)
 
 
-class ExploreScreen(Screen):
+class ExploreScreen(CopyScreen):
     CSS_PATH = "explore_screen.tcss"
 
     _versions: list[str] = []
@@ -61,6 +65,10 @@ class ExploreScreen(Screen):
     _dimensions: list[tuple[str, str, list]] = []
     # (subtemplate_code, row_code, column_code) of the fact selected in the grid.
     _current_subtemplate: str | None = None
+    # Facts for the current tree selection, kept so the view toggle can re-render.
+    _facts: list[tuple] = []
+    # Facts grouping: "cell" (per cell), "col" (per column), "row" (per row).
+    _fact_view: str = "cell"
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
@@ -75,6 +83,12 @@ class ExploreScreen(Screen):
                     Tree("Database", id="db-tree"),
                     Vertical(
                         Label("Facts"),
+                        Select(
+                            [("By cell", "cell"), ("By column", "col"), ("By row", "row")],
+                            value="cell",
+                            allow_blank=False,
+                            id="fact-view",
+                        ),
                         DataTable(id="facts-table"),
                         Label("Selected fact — dimensions"),
                         DataTable(id="fact-context"),
@@ -120,7 +134,7 @@ class ExploreScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#facts-table", DataTable).add_columns(*_FACT_COLUMNS)
+        self._configure_fact_columns()
         self.query_one("#fact-context", DataTable).add_columns(*_CONTEXT_COLUMNS)
         self.query_one("#metrics-table", DataTable).add_columns(*_METRIC_COLUMNS)
         self.query_one("#metric-usage", DataTable).add_columns(*_USAGE_COLUMNS)
@@ -161,6 +175,10 @@ class ExploreScreen(Screen):
         # Picking a real version moves focus straight to Open for quick keyboard flow.
         if event.select.id == "sel-db" and self._selected_version() is not None:
             self.query_one("#btn-open", Button).focus()
+        elif event.select.id == "fact-view":
+            self._fact_view = str(event.value)
+            self.query_one("#fact-context", DataTable).clear()
+            self._render_facts()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-back":
@@ -206,6 +224,7 @@ class ExploreScreen(Screen):
         self._populate_dimensions(self._dimensions)
 
         self._current_subtemplate = None
+        self._facts = []
         for tid in ("facts-table", "fact-context", "metric-usage", "members-table"):
             self.query_one(f"#{tid}", DataTable).clear()
 
@@ -223,28 +242,32 @@ class ExploreScreen(Screen):
         widget.clear()
         widget.root.expand()
         for perim, templates in tree:
-            p_node = widget.root.add(f"[b]{perim}[/b]", expand=False)
+            p_node = widget.root.add(
+                f"[b]{perim}[/b]", expand=False, data=("perimeter", perim)
+            )
             for t_code, t_label, subs in templates:
                 label = f"{t_code}  [dim]{t_label}[/dim]" if t_label else t_code
-                t_node = p_node.add(label, expand=False)
+                t_node = p_node.add(label, expand=False, data=("template", t_code))
                 for s_code, s_label, _s_type in subs:
                     leaf = f"{s_code}  [dim]{s_label}[/dim]" if s_label else s_code
-                    t_node.add_leaf(leaf, data=s_code)
+                    t_node.add_leaf(leaf, data=("subtemplate", s_code))
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         node: TreeNode = event.node
-        subtemplate_code = node.data
-        if not isinstance(subtemplate_code, str):
+        data = node.data
+        if not isinstance(data, tuple):
             return
+        kind, code = data
         db_path = self._db_path()
         if db_path is None:
             return
-        self._current_subtemplate = subtemplate_code
+        # Aggregated views carry each row's subtemplate in the key instead.
+        self._current_subtemplate = code if kind == "subtemplate" else None
         self.query_one("#fact-context", DataTable).clear()
 
         def worker() -> None:
             try:
-                facts = load_facts(db_path, subtemplate_code)
+                facts = load_facts(db_path, kind, code)
                 if self.is_mounted:
                     self.app.call_from_thread(self._populate_facts, facts)
             except Exception as exc:
@@ -253,20 +276,58 @@ class ExploreScreen(Screen):
 
         self.run_worker(worker, thread=True, name="explore-facts")
 
+    def _configure_fact_columns(self) -> None:
+        """(Re)build the facts table columns to match the current grouping view."""
+        table = self.query_one("#facts-table", DataTable)
+        table.clear(columns=True)
+        cols = {
+            "col": _FACT_COL_COLUMNS,
+            "row": _FACT_ROW_COLUMNS,
+        }.get(self._fact_view, _FACT_COLUMNS)
+        table.add_columns(*cols)
+
     def _populate_facts(self, facts: list[tuple]) -> None:
         if not self.is_mounted:
             return
+        self._facts = facts
+        self._render_facts()
+
+    def _render_facts(self) -> None:
+        if not self.is_mounted:
+            return
+        self._configure_fact_columns()
         table = self.query_one("#facts-table", DataTable)
         table.clear()
-        for row in facts:
-            # row = (row_code, column_code, row_label, column_label, metric, label)
-            table.add_row(*_cells(row), key=f"{row[0]}|{row[1]}")
-
-    def _load_fact_context(self, row_code: str, column_code: str) -> None:
-        db_path = self._db_path()
-        if db_path is None or self._current_subtemplate is None:
+        if self._fact_view == "cell":
+            for row in self._facts:
+                # row = (subtemplate, row_code, column_code, row_label, column_label,
+                #        metric, label)
+                table.add_row(*_cells(row), key=f"{row[0]}|{row[1]}|{row[2]}")
             return
-        subtemplate = self._current_subtemplate
+        # Aggregate: one line per (subtemplate, row|column) with a cell count.
+        code_idx, label_idx = (2, 4) if self._fact_view == "col" else (1, 3)
+        groups: dict[tuple[str, str], list] = {}
+        for row in self._facts:
+            key = (row[0], row[code_idx])
+            entry = groups.get(key)
+            if entry is None:
+                groups[key] = [row[label_idx], 1]
+            else:
+                entry[1] += 1
+        for (sub, code), (label, count) in groups.items():
+            table.add_row(
+                str(sub),
+                str(code) if code is not None else "",
+                str(label) if label is not None else "",
+                str(count),
+            )
+
+    def _load_fact_context(
+        self, subtemplate: str, row_code: str, column_code: str
+    ) -> None:
+        db_path = self._db_path()
+        if db_path is None or not subtemplate:
+            return
 
         def worker() -> None:
             try:
@@ -377,8 +438,11 @@ class ExploreScreen(Screen):
         if key is None:
             return
         if table_id == "facts-table":
-            row_code, _, column_code = key.partition("|")
-            self._load_fact_context(row_code, column_code)
+            if self._fact_view != "cell":
+                self.query_one("#fact-context", DataTable).clear()
+                return
+            subtemplate, row_code, column_code = key.split("|")
+            self._load_fact_context(subtemplate, row_code, column_code)
         elif table_id == "metrics-table":
             self._load_metric_usage(key)
         elif table_id == "dims-table":

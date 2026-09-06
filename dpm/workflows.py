@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import re
-import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,39 +10,44 @@ import duckdb
 import polars as pl
 
 from dpm._constants import DELTA_DIR
-from dpm._types import ApplyStats, DpmDataset, WorkbookCache
+from dpm._types import ApplyStats, DpmDataset
 from dpm.db import (
     insert_dimension_members,
     insert_dimensions,
     insert_fact_dimensions,
     insert_facts,
     insert_metrics,
+    insert_model_version,
     insert_perimeter_template,
     insert_perimeters,
     insert_subtemplates,
     insert_templates,
     load_db_stats,
     load_db_tree,
+    load_default_members,
     load_dimension_members_df,
+    load_open_dimensions,
     load_dimensions_with_members,
     load_entries,
+    filter_entries_by_perimeter,
     load_fact_context,
     load_fact_dimensions_df,
     load_metric_usage,
     load_metrics,
     load_metrics_df,
+    load_perimeter_facts,
     load_subtemplate_facts,
+    load_template_facts,
     open_db,
 )
 from dpm.delta import compare_versions
+from dpm.dpm_source import parse_dpm_database
 from dpm.delta_db import (
     delta_db_path,
     load_delta_result,
     save_delta_db,
 )
 from dpm.excel import generate_delta_workbook
-from dpm.parser import parse_workbook
-from dpm.toc import extract_toc_perimeters, filter_entries_by_perimeter
 from dpm.xbrl import apply_delta
 
 LOG = logging.getLogger(__name__)
@@ -69,16 +73,6 @@ def available_db_versions(db_dir: Path) -> list[str]:
     if not db_dir.is_dir():
         return []
     return sorted((p.stem for p in db_dir.glob("*.duckdb")), key=version_key)
-
-
-def _open_xlsx(path: Path) -> WorkbookCache:
-    warnings.filterwarnings(
-        "ignore",
-        message="Data Validation extension is not supported and will be removed",
-        category=UserWarning,
-        module="openpyxl.worksheet._reader",
-    )
-    return WorkbookCache.open(path)
 
 
 def _load_dataset(db_path: Path, selected_perimeters: set[str]) -> DpmDataset:
@@ -112,6 +106,40 @@ def _load_dataset(db_path: Path, selected_perimeters: set[str]) -> DpmDataset:
         )
     finally:
         conn.close()
+
+
+def _build_datapoint_changes(structure: pl.DataFrame) -> pl.DataFrame:
+    """Resolve the cell-keyed structure delta into the per-perimeter DPS pivot.
+
+    Runs the same resolution apply used to do at load time (:func:`build_dps_delta`),
+    once per perimeter, so the delta DB persists the apply-ready index directly.
+    """
+    from dpm.delta_schema import DATAPOINT_CHANGE_COLS
+    from dpm.xbrl import build_dps_delta, dps_delta_to_rows
+
+    schema = {c: pl.String for c in DATAPOINT_CHANGE_COLS}
+    if structure.is_empty() or "perimeter" not in structure.columns:
+        return pl.DataFrame(schema=schema)
+    cells = structure.filter(pl.col("type").is_in(["Row", "Column", "Matrix"]))
+    rows: list[dict[str, str]] = []
+    for perim in sorted(cells["perimeter"].unique().to_list()):
+        sub = cells.filter(pl.col("perimeter") == perim)
+        rows.extend(dps_delta_to_rows(perim, build_dps_delta(sub)))
+    return pl.DataFrame(rows, schema=schema) if rows else pl.DataFrame(schema=schema)
+
+
+def _load_apply_context(old_db: Path, new_db: Path) -> tuple[list[str], list[str]]:
+    """Union of open dimensions and default members across two ingested versions."""
+    open_dims: set[str] = set()
+    default_members: set[str] = set()
+    for db_path in (old_db, new_db):
+        conn = duckdb.connect(str(db_path), read_only=True)
+        try:
+            open_dims.update(load_open_dimensions(conn))
+            default_members.update(load_default_members(conn))
+        finally:
+            conn.close()
+    return sorted(open_dims), sorted(default_members)
 
 
 def load_perimeters(old_db: Path, new_db: Path) -> list[str]:
@@ -165,11 +193,21 @@ def load_db_contents(db_path: Path) -> DbContents:
         conn.close()
 
 
-def load_facts(db_path: Path, subtemplate_code: str) -> list[tuple]:
-    """Open an ingested DuckDB read-only and return one subtemplate's facts."""
+def load_facts(db_path: Path, kind: str, code: str) -> list[tuple]:
+    """Open an ingested DuckDB read-only and return facts for a tree node.
+
+    ``kind`` is ``"subtemplate"``, ``"template"`` or ``"perimeter"``; ``code`` is
+    the matching identifier. Rows are 7-tuples with subtemplate_code first.
+    """
+    loaders = {
+        "subtemplate": load_subtemplate_facts,
+        "template": load_template_facts,
+        "perimeter": load_perimeter_facts,
+    }
+    loader = loaders[kind]
     conn = duckdb.connect(str(db_path), read_only=True)
     try:
-        return load_subtemplate_facts(conn, subtemplate_code)
+        return loader(conn, code)
     finally:
         conn.close()
 
@@ -271,7 +309,16 @@ def ensure_delta_db(
     _step("Comparing versions…")
     result = compare_versions(old_ds, new_ds, on_step=on_step)
     _step("Saving delta database…")
-    save_delta_db(result, out_path, old_db.stem, new_db.stem)
+    open_dims, default_members = _load_apply_context(old_db, new_db)
+    save_delta_db(
+        result,
+        out_path,
+        old_db.stem,
+        new_db.stem,
+        open_dimensions=open_dims,
+        default_members=default_members,
+        datapoint_changes=_build_datapoint_changes(result.structure),
+    )
     LOG.info("Delta database written: %s", out_path)
     return out_path
 
@@ -287,25 +334,41 @@ def render_delta_xlsx(
     LOG.info("Delta workbook generated: %s", output_path)
 
 
+_DPM_DB_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
+
+# Fixed number of steps run_ingest emits, driving its progress %:
+# 1 "Reading DPM database…" + 9 parse steps + 10 inserts + model-version + commit.
+_INGEST_STEPS = 22
+
+
 def run_ingest(
-    workbook_path: Path,
+    source_path: Path,
     version: str,
     db_dir: Path,
-    on_sheet: Callable[[int, int, str], None] | None = None,
-    on_step: Callable[[str], None] | None = None,
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> dict:
-    """Parse a DPM workbook and persist all data to DuckDB. Returns stats dict."""
+    """Ingest the official EIOPA DPM SQLite database into DuckDB and return a stats dict.
+
+    The DPM database (:mod:`dpm.dpm_source`) is the sole ingestion source; the file
+    must be a ``.db``/``.sqlite`` SQLite database. ``on_progress(done, total, label)``
+    is invoked per step (including the parse's read steps) to drive a progress bar.
+    """
+
+    done = 0
 
     def _step(label: str) -> None:
-        if on_step:
-            on_step(label)
+        nonlocal done
+        done += 1
+        if on_progress:
+            on_progress(min(done, _INGEST_STEPS), _INGEST_STEPS, label)
 
-    workbook = _open_xlsx(workbook_path)
-    try:
-        toc_perimeters = extract_toc_perimeters(workbook)
-        parsed = parse_workbook(workbook, toc_perimeters, on_sheet=on_sheet)
-    finally:
-        workbook.close()
+    if source_path.suffix.lower() not in _DPM_DB_SUFFIXES:
+        raise ValueError(
+            f"Ingest source must be a DPM SQLite database "
+            f"({', '.join(sorted(_DPM_DB_SUFFIXES))}); got {source_path.name!r}"
+        )
+    _step("Reading DPM database…")
+    parsed = parse_dpm_database(source_path, version, on_step=_step)
 
     db_path = db_dir / f"{version}.duckdb"
     conn = open_db(db_path)
@@ -329,6 +392,9 @@ def run_ingest(
         insert_dimension_members(conn, parsed.dimension_members)
         _step("Inserting fact–dimension map…")
         insert_fact_dimensions(conn, parsed.fact_dimensions)
+        if parsed.model_version:
+            _step("Inserting model version…")
+            insert_model_version(conn, parsed.model_version)
         _step("Committing…")
         conn.commit()
     finally:

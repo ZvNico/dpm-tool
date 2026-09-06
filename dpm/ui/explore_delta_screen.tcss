@@ -12,6 +12,10 @@ ExploreDeltaScreen {
     #topbar #btn-open {
         width: auto;
     }
+    #topbar #chk-labels {
+        width: auto;
+        margin-left: 1;
+    }
     #overview {
         height: 2;
         padding: 0 2;
@@ -46,6 +50,10 @@ ExploreDeltaScreen {
     #cells-detail Label {
         color: $text-muted;
         margin-top: 1;
+    }
+    #cell-view {
+        width: 24;
+        margin: 0 0 1 0;
     }
     #cells-table {
         width: 100%;

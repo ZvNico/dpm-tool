@@ -13,9 +13,16 @@ from dpm.eiopa import candidate_urls
 
 def test_clean_version_candidate():
     urls = candidate_urls("2.10.0")
+    # The real 2.10.0 URL uses the ``Solvency_II`` filename spelling.
     assert (
         "https://dev.eiopa.europa.eu/Taxonomy/Full/2.10.0/S2/"
-        "EIOPA_Solvency_II_DPM_Annotated_Templates_2.10.0_table_group_arrangement.xlsx"
+        "EIOPA_Solvency_II_DPM_Database_2.10.0.zip"
+        in urls
+    )
+    # Both filename spellings are probed.
+    assert (
+        "https://dev.eiopa.europa.eu/Taxonomy/Full/2.10.0/S2/"
+        "EIOPA_SolvencyII_DPM_Database_2.10.0.zip"
         in urls
     )
     # clean release is probed first
@@ -27,7 +34,7 @@ def test_hotfix_casing_combo_present():
     urls = candidate_urls("2.8.2_hotfix")
     assert (
         "https://dev.eiopa.europa.eu/Taxonomy/Full/2.8.2_hotfix/S2/"
-        "EIOPA_Solvency_II_DPM_Annotated_Templates_2.8.2_Hotfix_table_group_arrangement.xlsx"
+        "EIOPA_SolvencyII_DPM_Database_2.8.2_Hotfix.zip"
         in urls
     )
     # explicit hotfix request → no clean-release candidate
@@ -36,7 +43,7 @@ def test_hotfix_casing_combo_present():
 
 def test_numbered_hotfix():
     urls = candidate_urls("2.7.0_Hotfix3")
-    assert any("2.7.0_Hotfix3/S2/" in u and "_2.7.0_Hotfix3_" in u for u in urls)
+    assert any("2.7.0_Hotfix3/S2/" in u and "_2.7.0_Hotfix3.zip" in u for u in urls)
 
 
 # ── config store ────────────────────────────────────────────────────────────

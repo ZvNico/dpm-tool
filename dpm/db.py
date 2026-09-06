@@ -1,22 +1,24 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from pathlib import Path
 
 import duckdb
 import polars as pl
 
-from dpm._constants import METRIC_COLS
 from dpm._types import (
     DimensionMemberRow,
     DimensionRow,
     FactDimensionRow,
     FactRow,
     MetricRow,
+    ModelVersionRow,
     PerimeterRow,
     PerimeterTemplateRow,
+    StructureEntry,
     SubtemplateRow,
     TemplateRow,
-    TocEntry,
 )
 
 _DDL = """
@@ -43,29 +45,36 @@ CREATE TABLE IF NOT EXISTS perimeter_template (
 );
 
 CREATE TABLE IF NOT EXISTS metrics (
-    metric_code  VARCHAR PRIMARY KEY,
-    metric_label VARCHAR
+    metric_code       VARCHAR PRIMARY KEY,
+    metric_label      VARCHAR,
+    data_type         VARCHAR,
+    period_type       VARCHAR,
+    balance           VARCHAR,
+    referenced_domain VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS facts (
-    subtemplate_code VARCHAR REFERENCES subtemplates(subtemplate_code),
-    row_code         VARCHAR,
-    column_code      VARCHAR,
-    row_label        VARCHAR,
-    column_label     VARCHAR,
-    metric_code      VARCHAR REFERENCES metrics(metric_code),
+    subtemplate_code     VARCHAR REFERENCES subtemplates(subtemplate_code),
+    row_code             VARCHAR,
+    column_code          VARCHAR,
+    row_label            VARCHAR,
+    column_label         VARCHAR,
+    metric_code          VARCHAR REFERENCES metrics(metric_code),
+    data_point_signature VARCHAR,
     PRIMARY KEY (subtemplate_code, row_code, column_code)
 );
 
 CREATE TABLE IF NOT EXISTS dimensions (
-    dimension_code  VARCHAR PRIMARY KEY,
-    dimension_label VARCHAR
+    dimension_code      VARCHAR PRIMARY KEY,
+    dimension_label     VARCHAR,
+    default_member_code VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS dimension_members (
     member_code    VARCHAR PRIMARY KEY,
     dimension_code VARCHAR REFERENCES dimensions(dimension_code),
-    member_label   VARCHAR
+    member_label   VARCHAR,
+    is_default     BOOLEAN
 );
 
 CREATE TABLE IF NOT EXISTS fact_dimensions (
@@ -75,6 +84,12 @@ CREATE TABLE IF NOT EXISTS fact_dimensions (
     dimension_code   VARCHAR REFERENCES dimensions(dimension_code),
     member_code      VARCHAR REFERENCES dimension_members(member_code),
     PRIMARY KEY (subtemplate_code, row_code, column_code, dimension_code)
+);
+
+CREATE TABLE IF NOT EXISTS model_version (
+    version   VARCHAR PRIMARY KEY,
+    from_date VARCHAR,
+    to_date   VARCHAR
 );
 """
 
@@ -89,6 +104,7 @@ _ALLOWED_TABLES = frozenset(
         "dimensions",
         "dimension_members",
         "fact_dimensions",
+        "model_version",
     }
 )
 
@@ -101,13 +117,21 @@ def open_db(path: Path) -> duckdb.DuckDBPyConnection:
 
 
 def _bulk_upsert(conn: duckdb.DuckDBPyConnection, table: str, rows: list) -> None:
-    """Insert rows via Arrow/Polars bulk transfer — orders of magnitude faster than executemany."""
+    """Insert rows via Arrow/Polars bulk transfer — orders of magnitude faster than executemany.
+
+    Only the columns present in ``rows`` are written (named explicitly), so callers
+    may omit nullable columns and let them default to NULL.
+    """
     if not rows:
         return
     if table not in _ALLOWED_TABLES:
         raise ValueError(f"Unknown table: {table!r}")
-    df = pl.DataFrame(rows)
-    conn.execute(f"INSERT OR REPLACE INTO {table} SELECT * FROM df")
+    # ``infer_schema_length=None`` scans every row so a column that is null for the
+    # first hundreds of rows but populated later (e.g. metric ``referenced_domain``)
+    # is typed correctly rather than as Null.
+    df = pl.DataFrame(rows, infer_schema_length=None)
+    cols = ", ".join(df.columns)
+    conn.execute(f"INSERT OR REPLACE INTO {table} ({cols}) SELECT {cols} FROM df")
 
 
 def insert_templates(conn: duckdb.DuckDBPyConnection, rows: list[TemplateRow]) -> None:
@@ -156,6 +180,12 @@ def insert_fact_dimensions(
     conn: duckdb.DuckDBPyConnection, rows: list[FactDimensionRow]
 ) -> None:
     _bulk_upsert(conn, "fact_dimensions", rows)
+
+
+def insert_model_version(
+    conn: duckdb.DuckDBPyConnection, rows: list[ModelVersionRow]
+) -> None:
+    _bulk_upsert(conn, "model_version", rows)
 
 
 _METRICS_DF_SQL = """
@@ -240,25 +270,64 @@ def load_db_tree(
     return tree
 
 
+# Shared fact projection; every loader prepends subtemplate_code so callers can
+# attribute a row to its subtemplate (needed when facts are aggregated).
+_FACT_SELECT = """
+    SELECT
+        f.subtemplate_code,
+        f.row_code,
+        f.column_code,
+        f.row_label,
+        f.column_label,
+        f.metric_code,
+        m.metric_label
+    FROM facts f
+    JOIN metrics m ON f.metric_code = m.metric_code
+"""
+
+
 def load_subtemplate_facts(
     conn: duckdb.DuckDBPyConnection, subtemplate_code: str
-) -> list[tuple[str, str, str, str, str, str]]:
+) -> list[tuple[str, str, str, str, str, str, str]]:
     """Facts for a single subtemplate, joined to their metric label."""
     return conn.execute(
-        """
-        SELECT
-            f.row_code,
-            f.column_code,
-            f.row_label,
-            f.column_label,
-            f.metric_code,
-            m.metric_label
-        FROM facts f
-        JOIN metrics m ON f.metric_code = m.metric_code
+        _FACT_SELECT
+        + """
         WHERE f.subtemplate_code = ?
         ORDER BY f.row_code, f.column_code
         """,
         [subtemplate_code],
+    ).fetchall()
+
+
+def load_template_facts(
+    conn: duckdb.DuckDBPyConnection, template_code: str
+) -> list[tuple[str, str, str, str, str, str, str]]:
+    """Facts across every subtemplate of one template."""
+    return conn.execute(
+        _FACT_SELECT
+        + """
+        JOIN subtemplates st ON f.subtemplate_code = st.subtemplate_code
+        WHERE st.template_code = ?
+        ORDER BY f.subtemplate_code, f.row_code, f.column_code
+        """,
+        [template_code],
+    ).fetchall()
+
+
+def load_perimeter_facts(
+    conn: duckdb.DuckDBPyConnection, perimeter_code: str
+) -> list[tuple[str, str, str, str, str, str, str]]:
+    """Facts across every subtemplate reachable from one perimeter."""
+    return conn.execute(
+        _FACT_SELECT
+        + """
+        JOIN subtemplates st ON f.subtemplate_code = st.subtemplate_code
+        JOIN perimeter_template pt ON st.template_code = pt.template_code
+        WHERE pt.perimeter_code = ?
+        ORDER BY f.subtemplate_code, f.row_code, f.column_code
+        """,
+        [perimeter_code],
     ).fetchall()
 
 
@@ -379,7 +448,37 @@ def load_dimension_members_df(conn: duckdb.DuckDBPyConnection) -> pl.DataFrame:
     """).pl()
 
 
-def load_entries(conn: duckdb.DuckDBPyConnection) -> list[TocEntry]:
+_OPEN_DIM_RE = re.compile(r"([\w:]+)\(\*")
+
+
+def load_open_dimensions(conn: duckdb.DuckDBPyConnection) -> list[str]:
+    """Dimension codes that appear as an open/typed axis (``DIM(*…)``) in any DPS.
+
+    An open axis carries no fixed member — the instance supplies a concrete value
+    (e.g. a currency) that the model signature wildcards out — so apply-delta must
+    drop these dimensions when reducing an instance fact to its canonical key.
+    """
+    open_dims: set[str] = set()
+    for (dps,) in conn.execute(
+        "SELECT DISTINCT data_point_signature FROM facts "
+        "WHERE data_point_signature LIKE '%(*%'"
+    ).fetchall():
+        if dps:
+            open_dims.update(m.strip() for m in _OPEN_DIM_RE.findall(dps))
+    return sorted(open_dims)
+
+
+def load_default_members(conn: duckdb.DuckDBPyConnection) -> list[str]:
+    """Member codes flagged as their domain's default (omitted from instance contexts)."""
+    return [
+        r[0]
+        for r in conn.execute(
+            "SELECT member_code FROM dimension_members WHERE is_default"
+        ).fetchall()
+    ]
+
+
+def load_entries(conn: duckdb.DuckDBPyConnection) -> list[StructureEntry]:
     rows = conn.execute("""
         SELECT pt.perimeter_code, pt.template_code, s.subtemplate_code
         FROM perimeter_template pt
@@ -387,10 +486,17 @@ def load_entries(conn: duckdb.DuckDBPyConnection) -> list[TocEntry]:
         ORDER BY 1, 2, 3
     """).fetchall()
     return [
-        TocEntry(
+        StructureEntry(
             perimeter=perimeter_code,
             template_code=template_code,
             subtemplate_code=subtemplate_code,
         )
         for perimeter_code, template_code, subtemplate_code in rows
     ]
+
+
+def filter_entries_by_perimeter(
+    entries: Sequence[StructureEntry], selected: set[str]
+) -> list[StructureEntry]:
+    """Keep only entries whose perimeter (case-insensitively) is in ``selected``."""
+    return [e for e in entries if e.perimeter.lower() in selected]

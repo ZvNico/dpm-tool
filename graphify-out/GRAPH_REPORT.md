@@ -1,156 +1,192 @@
-# Graph Report - .  (2026-08-13)
+# Graph Report - michael  (2026-09-06)
 
 ## Corpus Check
-- 29 files · ~19,803 words
-- Verdict: corpus is large enough that graph structure adds value.
+- Corpus is ~33,761 words - fits in a single context window. You may not need a graph.
 
 ## Summary
-- 661 nodes · 1517 edges · 27 communities (18 shown, 9 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 41 edges (avg confidence: 0.55)
-- Token cost: 15,000 input · 3,674 output
+- 699 nodes · 1656 edges · 30 communities (24 shown, 4 thin omitted)
+- Extraction: 95% EXTRACTED · 5% INFERRED · 0% AMBIGUOUS · INFERRED: 77 edges (avg confidence: 0.92)
+- Token cost: 55,011 input · 0 output
 
 ## Community Hubs (Navigation)
-- DuckDB Persistence Layer
-- Workbook Template Parsing
-- App Shell & Config
-- TOC & Perimeter Extraction
-- Explore Delta Screen
-- Delta Computation
-- Delta DuckDB Cache
-- XBRL Apply Screen
-- Explore Database Screen
-- UI Modals & File Pickers
-- Ingest Screen
+- DPM Database & Ingestion
+- XBRL Delta Apply
+- App Config & EIOPA Fetch
+- Delta Explorer Screen
+- Delta DB Persistence
+- Delta Computation Engine
+- Data Explorer Screen
+- Ingest Screen & Modals
+- DPM Source Parsing & Types
+- Excel Workbook Export
+- UI Compose & Widgets
 - Delta Screen
-- DPM Concepts & Workflows
-- Parser Layout Tests
-- XBRL Delta Application
-- Logging Handler
+- Apply Screen
+- Constants & Screen Registry
+- Clipboard Copy Utils
+- Apply/Delta Docs
+- File Picker Widget
+- Architecture Docs
+- File Open Prompts
+- Ingestion & Matching Docs
+- Configuration & README Docs
+- Exact Matching & Gap Analysis
+- Dimension Data Model
+- Fact & Metric Data Model
 - Test Fixtures
-- Any Type
-- DataFrame (dpm)
-- DataFrame (delta)
-- Filters
-- DuckDB Connection
-- Polars Expr
-- MainScreen
-- dpm-tool CLI
+- Worker Threads Doc
+- Output Path Config
+- Package Root
 
 ## God Nodes (most connected - your core abstractions)
-1. `ExploreDeltaScreen` - 33 edges
-2. `ExploreScreen` - 31 edges
-3. `norm()` - 23 edges
-4. `SourceSelect` - 21 edges
-5. `DeltaScreen` - 21 edges
-6. `TocEntry` - 20 edges
-7. `ApplyScreen` - 19 edges
-8. `IngestScreen` - 19 edges
-9. `run_ingest()` - 18 edges
-10. `WorkbookCache` - 17 edges
+1. `ExploreDeltaScreen` - 37 edges
+2. `ExploreScreen` - 33 edges
+3. `apply_delta()` - 25 edges
+4. `DeltaScreen` - 22 edges
+5. `SourceSelect` - 21 edges
+6. `save_delta_db()` - 20 edges
+7. `ApplyScreen` - 20 edges
+8. `IngestScreen` - 20 edges
+9. `_project()` - 19 edges
+10. `run_ingest()` - 19 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `TestNorm` --uses--> `TocEntry`  [INFERRED]
-  tests/test_parsing.py → dpm/_types.py
-- `TestIsQname` --uses--> `TocEntry`  [INFERRED]
-  tests/test_parsing.py → dpm/_types.py
-- `TestExtractQname` --uses--> `TocEntry`  [INFERRED]
-  tests/test_parsing.py → dpm/_types.py
-- `TestExtractMetricLabel` --uses--> `TocEntry`  [INFERRED]
-  tests/test_parsing.py → dpm/_types.py
-- `TestNearestText` --uses--> `TocEntry`  [INFERRED]
-  tests/test_parsing.py → dpm/_types.py
+- `Solvency II reporting` --semantically_similar_to--> `Data Point Model (DPM)`  [INFERRED] [semantically similar]
+  temp.md → README.md
+- `_run_delta()` --uses--> `DeltaResult`  [INFERRED]
+  tests/test_golden.py → dpm/_types.py
+- `Default-member matching bug (mi363)` --references--> `Default members`  [INFERRED]
+  temp.md → docs/ingestion.md
+- `Solvency II reporting` --conceptually_related_to--> `Fact`  [INFERRED]
+  temp.md → docs/reporting_data_model.md
+- `DpmToolApp` --uses--> `MainScreen`  [INFERRED]
+  app.py → dpm/ui/main_screen.py
 
 ## Import Cycles
 - None detected.
 
 ## Hyperedges (group relationships)
-- **Ingest to Delta to Apply Pipeline** — readme_dpm_ingest, readme_dpm_delta, readme_xbrl_apply_delta, readme_versioned_database [EXTRACTED 0.85]
+- **Ingest to Delta to Apply pipeline** — docs_ingestion_ingestion, docs_delta_delta_result, docs_apply_xbrl_apply, docs_architecture_end_to_end_flow [EXTRACTED 1.00]
+- **Core reporting data model vocabulary** — docs_reporting_data_model_fact, docs_reporting_data_model_metric, docs_reporting_data_model_dimension, docs_reporting_data_model_member, docs_reporting_data_model_domain, docs_reporting_data_model_context [EXTRACTED 1.00]
+- **DPS-based exact matching backbone** — docs_ingestion_dps, docs_delta_datapoint_changes, docs_apply_xbrl_dps_delta, docs_ingestion_default_members [INFERRED 0.85]
 
-## Communities (27 total, 9 thin omitted)
+## Communities (30 total, 4 thin omitted)
 
-### Community 0 - "DuckDB Persistence Layer"
+### Community 0 - "DPM Database & Ingestion"
+Cohesion: 0.07
+Nodes (78): _bulk_upsert(), insert_dimension_members(), insert_dimensions(), insert_fact_dimensions(), insert_facts(), insert_metrics(), insert_model_version(), insert_perimeter_template() (+70 more)
+
+### Community 1 - "XBRL Delta Apply"
+Cohesion: 0.06
+Nodes (76): load_apply_context(), Return ``(open_dimensions, default_members)`` stored with the delta. Older…, generate_apply_debug_workbook(), Readable apply-delta debug: a Summary plus one metric-rooted sheet per action.…, ApplyStats, _build_datapoint_changes(), DataFrame, Resolve the cell-keyed structure delta into the per-perimeter DPS pivot. Runs… (+68 more)
+
+### Community 2 - "App Config & EIOPA Fetch"
 Cohesion: 0.05
-Nodes (92): _bulk_upsert(), insert_dimension_members(), insert_dimensions(), insert_fact_dimensions(), insert_facts(), insert_metrics(), insert_perimeter_template(), insert_perimeters() (+84 more)
+Nodes (53): App, DpmToolApp, main(), work, Go back a screen, confirming first if the current screen has a running task.…, add_version(), _load_raw(), load_theme() (+45 more)
 
-### Community 1 - "Workbook Template Parsing"
-Cohesion: 0.06
-Nodes (49): _extract_metrics_col(), _extract_metrics_row(), _extract_window_dimensions(), _is_subtemplate_header(), _pad(), _parse_subtemplate_window(), _parse_template_sheet(), parse_workbook() (+41 more)
-
-### Community 2 - "App Shell & Config"
-Cohesion: 0.06
-Nodes (48): DpmToolApp, main(), work, Go back a screen, confirming first if the current screen has a running task.…, add_version(), _load_raw(), load_theme(), load_versions() (+40 more)
-
-### Community 3 - "TOC & Perimeter Extraction"
+### Community 3 - "Delta Explorer Screen"
 Cohesion: 0.07
-Nodes (25): first_match(), discover_toc_sheet(), extract_perimeters(), extract_toc(), extract_toc_perimeters(), filter_entries_by_perimeter(), _find_header_row(), looks_like_perimeter() (+17 more)
+Nodes (29): _colored_badge(), _counts_str(), ExploreDeltaScreen, _member_status(), _merge(), _node_color(), _parse_dims(), Changed (+21 more)
 
-### Community 4 - "Explore Delta Screen"
-Cohesion: 0.06
-Nodes (28): _colored_badge(), _counts_str(), ExploreDeltaScreen, _member_status(), _merge(), _node_color(), _parse_dims(), Changed (+20 more)
-
-### Community 5 - "Delta Computation"
-Cohesion: 0.13
-Nodes (36): added_deleted_df(), classify_type(), compare_dimensions(), compare_metrics(), compare_versions(), empty_delta_df(), empty_metric_df(), _empty_status_df() (+28 more)
-
-### Community 6 - "Delta DuckDB Cache"
-Cohesion: 0.13
-Nodes (37): delta_db_path(), delta_perimeters(), load_apply_changes(), load_cell_changes(), load_delta_counts(), load_delta_meta(), load_delta_result(), load_delta_tree() (+29 more)
-
-### Community 7 - "XBRL Apply Screen"
-Cohesion: 0.07
-Nodes (17): ApplyScreen, Changed, ComposeResult, Exception, Path, Pressed, Screen, work (+9 more)
-
-### Community 8 - "Explore Database Screen"
+### Community 4 - "Delta DB Persistence"
 Cohesion: 0.11
-Nodes (9): _cells(), ExploreScreen, Changed, Exception, NodeSelected, Path, Pressed, RowSelected (+1 more)
+Nodes (54): delta_db_path(), delta_perimeters(), load_apply_changes(), load_cell_changes(), load_datapoint_changes(), load_delta_counts(), load_delta_meta(), load_delta_result() (+46 more)
 
-### Community 9 - "UI Modals & File Pickers"
+### Community 5 - "Delta Computation Engine"
 Cohesion: 0.08
-Nodes (21): Click, ConfirmCancelModal, file_filters(), _FilePicker, OverrideDbModal, prompt_open_file(), prompt_open_xlsx(), ComposeResult (+13 more)
+Nodes (45): filter_entries_by_perimeter(), Keep only entries whose perimeter (case-insensitively) is in ``selected``., added_deleted_df(), classify_type(), compare_dimensions(), compare_metrics(), compare_versions(), empty_delta_df() (+37 more)
 
-### Community 10 - "Ingest Screen"
-Cohesion: 0.15
-Nodes (9): IngestScreen, Changed, Exception, Path, Pressed, Screen, work, Auto-fill the detected version as the file path is typed. Leaves the field… (+1 more)
+### Community 6 - "Data Explorer Screen"
+Cohesion: 0.10
+Nodes (11): _cells(), ExploreScreen, Changed, Exception, NodeSelected, Path, Pressed, RowSelected (+3 more)
+
+### Community 7 - "Ingest Screen & Modals"
+Cohesion: 0.10
+Nodes (14): IngestScreen, Changed, Exception, Path, Pressed, work, Prompt to override an existing DB for this version, then start ingest.…, Drive the bar from a ``(done, total, label)`` event on the UI thread.… (+6 more)
+
+### Community 8 - "DPM Source Parsing & Types"
+Cohesion: 0.16
+Nodes (28): Connection, _norm_metric(), parse_dpm_database(), parse_dps_members(), parse_dps_metric(), _project(), Path, Ingest the official EIOPA DPM SQLite database into the thin pivot schema. This… (+20 more)
+
+### Community 9 - "Excel Workbook Export"
+Cohesion: 0.12
+Nodes (23): _col_width(), _count_by_qname(), generate_delta_workbook(), _group_by_metric(), DataFrame, Path, A metric-rooted sheet: ``display_rows`` is ``[(level, [values]), …]`` where…, Yield ``(key, count)`` per distinct ``cols`` tuple, in first-seen order.… (+15 more)
+
+### Community 10 - "UI Compose & Widgets"
+Cohesion: 0.12
+Nodes (11): DataTable, ComposeResult, ComposeResult, Select of ingested DB versions with a greyed placeholder on the collapsed…, SourceSelect, ComposeResult, ComposeResult, ComposeResult (+3 more)
 
 ### Community 11 - "Delta Screen"
-Cohesion: 0.20
-Nodes (6): DeltaScreen, Changed, Exception, Path, Pressed, Screen
+Cohesion: 0.18
+Nodes (7): DeltaScreen, Changed, Exception, Path, Pressed, delta_output_name(), Filename for a delta workbook, encoding its perimeter coverage.…
 
-### Community 12 - "DPM Concepts & Workflows"
-Cohesion: 0.14
-Nodes (18): EIOPA Annotated-Templates Workbook, config.json (tracked versions and UI theme), EIOPA Solvency II Data Point Model (DPM), Reviewable Delta Workbook (Delta_DPM.xlsx), DPM Delta Workflow, DPM Ingest Workflow, dpm-tool, DPM_TOOL_HOME env override (+10 more)
+### Community 12 - "Apply Screen"
+Cohesion: 0.17
+Nodes (8): ApplyScreen, Changed, Exception, Filters, Path, Pressed, Screen, work
 
-### Community 13 - "Parser Layout Tests"
-Cohesion: 0.24
-Nodes (4): metric qnames run across the anchor row; a row-scoped dimension (declared as a…, metric qnames run down a column; dim declared in the anchor row to the right of…, TestMetricsColDimensions, TestMetricsRowBothScopes
+### Community 13 - "Constants & Screen Registry"
+Cohesion: 0.30
+Nodes (10): Path, Resolve a user-entered output path for an export. A bare filename (no directory…, resolve_output_path(), attach(), detach(), RichLogHandler, available_db_versions(), Sort key for dotted numeric DPM versions, e.g. '2.10.0' > '2.8.2'. (+2 more)
 
-### Community 14 - "XBRL Delta Application"
-Cohesion: 0.36
-Nodes (10): apply_delta(), build_delta_maps(), detect_perimeter_from_xml_bytes(), _expand_deleted_span(), flag_facts_with_delta(), flatten_metric_facts(), DataFrame, Path (+2 more)
+### Community 14 - "Clipboard Copy Utils"
+Cohesion: 0.22
+Nodes (11): CopyScreen, _datatable_all_text(), _plain(), The screen's output log, so ``c``/``a`` copy it even when focus is on a…, Flatten a possibly-styled cell/label to plain text for the clipboard., Text to copy for the currently focused widget, or None if it has none.…, The whole table as tab-separated text: a header row plus every data row., Write ``text`` to the system clipboard via an external tool; True on success. (+3 more)
 
-### Community 15 - "Logging Handler"
-Cohesion: 0.32
-Nodes (5): attach(), detach(), RichLogHandler, LogRecord, RichLog
+### Community 15 - "Apply/Delta Docs"
+Cohesion: 0.18
+Nodes (12): Apply (XBRL migration), ApplyStats, Regex byte splicing rewrite, Context cloning (_clone_context), DpsDelta matching index, Perimeter auto-detection, Survival-wins resolution order, Apply context (open_dimensions, default_members) (+4 more)
+
+### Community 16 - "File Picker Widget"
+Cohesion: 0.22
+Nodes (6): Click, _FilePicker, FileOpen tailored for a click/double-click pick flow. - Hides the filter…, FileOpen, Highlighted, on
+
+### Community 17 - "Architecture Docs"
+Cohesion: 0.28
+Nodes (9): End-to-end data flow (ingest/delta/apply), Engine/Presentation layer split, workflows.py orchestration facade, DeltaResult, DpmDataset, QName-move detection, Structure delta (_structure_delta), The pipeline (ingest/diff/apply) (+1 more)
+
+### Community 18 - "File Open Prompts"
+Cohesion: 0.28
+Nodes (9): file_filters(), prompt_open_dpm_source(), prompt_open_file(), Filters, Path, Screen, A two-entry filter: the given suffix (e.g. '.xlsx') plus an all-files fallback., Open a file-select dialog and return the chosen path (or None). Must be awaited… (+1 more)
+
+### Community 19 - "Ingestion & Matching Docs"
+Cohesion: 0.25
+Nodes (8): _decide_fact per-fact decision, _match_fixed candidate matching, Arrow/Polars bulk upsert, Default members, Data Point Signature (DPS), ParsedModel (nine pivot tables), Pivot schema projection (dpm_source), Cell (data point)
+
+### Community 20 - "Configuration & README Docs"
+Cohesion: 0.29
+Nodes (7): config.json app config, Per-user platform directory layout, Fetch release (eiopa), Bounded URL candidate resolution, dpm-tool, DPM_TOOL_HOME override, Textual TUI
+
+### Community 21 - "Exact Matching & Gap Analysis"
+Cohesion: 0.40
+Nodes (5): Exact per-cell matching, DPM SQLite as sole ingestion source, Default-member matching bug (mi363), Official EIOPA DPM Database (SQLite), DB architecture gap analysis
+
+### Community 22 - "Dimension Data Model"
+Cohesion: 0.50
+Nodes (5): dimension_members representative-dimension caveat, Dimension, Domain, fact_dimensions as source of truth, Member
+
+### Community 23 - "Fact & Metric Data Model"
+Cohesion: 0.40
+Nodes (5): Context, Fact, Metric, Data Point Model (DPM), Solvency II reporting
 
 ## Knowledge Gaps
-- **8 isolated node(s):** `dpm-tool`, `EIOPA Solvency II Data Point Model (DPM)`, `Textual TUI`, `EIOPA Annotated-Templates Workbook`, `XBRL Instance Document` (+3 more)
-  These have ≤1 connection - possible missing edges or undocumented components.
-- **9 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **9 isolated node(s):** `dpm-tool`, `Textual TUI`, `Perimeter auto-detection`, `ApplyStats`, `resolve_output_path` (+4 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 206 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **4 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `ExploreDeltaScreen` connect `Explore Delta Screen` to `App Shell & Config`, `Delta DuckDB Cache`, `XBRL Apply Screen`?**
-  _High betweenness centrality (0.090) - this node is a cross-community bridge._
-- **Why does `ExploreScreen` connect `Explore Database Screen` to `DuckDB Persistence Layer`, `App Shell & Config`, `XBRL Apply Screen`?**
-  _High betweenness centrality (0.082) - this node is a cross-community bridge._
-- **Why does `SourceSelect` connect `XBRL Apply Screen` to `DuckDB Persistence Layer`, `Explore Delta Screen`, `Delta DuckDB Cache`, `Explore Database Screen`, `Delta Screen`?**
-  _High betweenness centrality (0.057) - this node is a cross-community bridge._
+- **Why does `ExploreDeltaScreen` connect `Delta Explorer Screen` to `UI Compose & Widgets`, `App Config & EIOPA Fetch`, `Clipboard Copy Utils`?**
+  _High betweenness centrality (0.093) - this node is a cross-community bridge._
+- **Why does `ExploreScreen` connect `Data Explorer Screen` to `UI Compose & Widgets`, `App Config & EIOPA Fetch`, `Constants & Screen Registry`, `Clipboard Copy Utils`?**
+  _High betweenness centrality (0.078) - this node is a cross-community bridge._
+- **Why does `SourceSelect` connect `UI Compose & Widgets` to `Delta Explorer Screen`, `Data Explorer Screen`, `Delta Screen`, `Apply Screen`, `Constants & Screen Registry`?**
+  _High betweenness centrality (0.049) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `ExploreDeltaScreen` (e.g. with `SourceSelect` and `MainScreen`) actually correct?**
   _`ExploreDeltaScreen` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 3 inferred relationships involving `ExploreScreen` (e.g. with `SourceSelect` and `DbContents`) actually correct?**
   _`ExploreScreen` has 3 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 3 inferred relationships involving `SourceSelect` (e.g. with `ApplyScreen` and `ExploreDeltaScreen`) actually correct?**
-  _`SourceSelect` has 3 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `dpm-tool`, `EIOPA Solvency II Data Point Model (DPM)`, `Textual TUI` to the rest of the system?**
-  _8 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Are the 2 inferred relationships involving `DeltaScreen` (e.g. with `RichLogHandler` and `MainScreen`) actually correct?**
+  _`DeltaScreen` has 2 INFERRED edges - model-reasoned connections that need verification._
+- **What connects `dpm-tool`, `Textual TUI`, `Perimeter auto-detection` to the rest of the system?**
+  _9 weakly-connected nodes found - possible documentation gaps or missing edges._

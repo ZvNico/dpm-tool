@@ -19,22 +19,21 @@ from dpm._types import DeltaResult
 from dpm.delta import compare_versions
 from dpm.delta_schema import DELTA_STRUCTURE_COLS, STRUCTURE_XLSX
 from dpm.excel import generate_delta_workbook
-from dpm.workflows import _load_dataset, detect_version, load_perimeters, run_ingest
+from dpm.workflows import _load_dataset, load_perimeters, run_ingest
 
 _SKIP_SHEETS = {"summary", "metrics", "dimensions"}
 # The workbook writes columns in STRUCTURE_XLSX order; read them back positionally
 # into the canonical snake_case names so both sides compare in the same schema.
 _XLSX_KEYS = list(STRUCTURE_XLSX.keys())
 
+# DPM SQLite database fixtures, one per version — the sole ingestion source. These
+# are large official EIOPA downloads and are not committed; the test skips when they
+# are absent. Names are ``{version}.db`` so the version is the file stem.
 DATA_DIR = Path(__file__).parent.parent / "data" / "input" / "public"
-OLD_XLSX = (
-    DATA_DIR
-    / "EIOPA_Solvency_II_DPM_Annotated_Templates_2.8.2_Hotfix_table_group_arrangement.xlsx"
-)
-NEW_XLSX = (
-    DATA_DIR
-    / "EIOPA_Solvency_II_DPM_Annotated_Templates_2.10.0_table_group_arrangement.xlsx"
-)
+OLD_VERSION = "2.8.2"
+NEW_VERSION = "2.10.0"
+OLD_DB = DATA_DIR / f"{OLD_VERSION}.db"
+NEW_DB = DATA_DIR / f"{NEW_VERSION}.db"
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 GOLDEN_FILE = GOLDEN_DIR / "delta.xlsx"
@@ -51,15 +50,12 @@ _SORT_COLS = [
 
 
 def _run_delta(db_dir: Path) -> DeltaResult:
-    # Real production path: ingest both workbooks to DuckDB, then delta from the DBs.
-    old_version = detect_version(OLD_XLSX)
-    new_version = detect_version(NEW_XLSX)
-    assert old_version and new_version
-    run_ingest(OLD_XLSX, old_version, db_dir)
-    run_ingest(NEW_XLSX, new_version, db_dir)
+    # Real production path: ingest both DPM databases to DuckDB, then delta from the DBs.
+    run_ingest(OLD_DB, OLD_VERSION, db_dir)
+    run_ingest(NEW_DB, NEW_VERSION, db_dir)
 
-    old_db = db_dir / f"{old_version}.duckdb"
-    new_db = db_dir / f"{new_version}.duckdb"
+    old_db = db_dir / f"{OLD_VERSION}.duckdb"
+    new_db = db_dir / f"{NEW_VERSION}.duckdb"
     selected = {p.lower() for p in load_perimeters(old_db, new_db)}
     old_ds = _load_dataset(old_db, selected)
     new_ds = _load_dataset(new_db, selected)
@@ -97,6 +93,12 @@ def _sorted(df: pl.DataFrame) -> pl.DataFrame:
 
 @pytest.mark.slow
 def test_delta_golden(request: pytest.FixtureRequest, tmp_path: Path) -> None:
+    if not (OLD_DB.exists() and NEW_DB.exists()):
+        pytest.skip(
+            f"DPM database fixtures not found ({OLD_DB.name}, {NEW_DB.name} in "
+            f"{DATA_DIR}); download them to run the golden delta test."
+        )
+
     actual = _run_delta(tmp_path)
 
     if request.config.getoption("--update-golden"):

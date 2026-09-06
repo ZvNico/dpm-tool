@@ -4,9 +4,9 @@ from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical
-from textual.screen import Screen
 from textual.widgets import (
     Button,
+    Checkbox,
     DataTable,
     Footer,
     Input,
@@ -18,7 +18,6 @@ from textual.widgets import (
     Tree,
 )
 from textual.widgets.tree import TreeNode
-
 import polars as pl
 from rich.text import Text
 
@@ -30,11 +29,30 @@ from dpm.delta_db import (
     load_member_changes,
     load_metric_changes,
 )
+from dpm.ui._utils import CopyScreen
 from dpm.ui.delta_screen import SourceSelect
 from dpm.workflows import available_db_versions, ensure_delta_db, version_key
 
 # Merged display headers (Old/New collapsed into one column; Status → row color).
-_CELL_COLS = ("Row", "Col", "QName", "Type")
+# The label columns only appear when label-only changes are included; otherwise the
+# table is the leaner code/qname view.
+_CELL_COLS = ("Sub", "Row", "Col", "QName", "Type")
+_CELL_COLS_LABELS = (
+    "Sub", "Row", "Col", "QName", "Metric", "Row Label", "Col Label", "Type"
+)
+_CELL_SPECS = [
+    "subtemplate_code", "row_code", "column_code", ("qname_old", "qname_new"), "type"
+]
+_CELL_SPECS_LABELS = [
+    "subtemplate_code",
+    "row_code",
+    "column_code",
+    ("qname_old", "qname_new"),
+    ("metric_label_old", "metric_label_new"),
+    ("row_label_old", "row_label_new"),
+    ("column_label_old", "column_label_new"),
+    "type",
+]
 _CELLDIM_COLS = ("Dimension", "Member")
 _METRIC_COLS = ("MetricCode", "MetricLabel")
 # Dimensions tab is master-detail (like the DB explorer): a dimensions list on the
@@ -74,15 +92,25 @@ def _member_status(old, new) -> str:
 
 
 def _styled_row(row: dict, specs, status: str) -> list[Text]:
-    """Build one colored table row; each spec is a column name or an (old, new) merge."""
-    style = _STATUS_STYLE.get(status, "")
+    """Build one colored table row; each spec is a column name or an (old, new) merge.
+
+    ``Added``/``Deleted`` rows are wholly colored (green/red). A ``Modified`` row is
+    left default except for the individual ``(old, new)`` attributes that actually
+    changed, which are highlighted orange — so the edit points to what moved.
+    """
+    whole_row = status in ("Added", "Deleted")
+    base = _STATUS_STYLE.get(status, "") if whole_row else ""
+    modified_style = _STATUS_STYLE["Modified"]
     out = []
     for spec in specs:
-        val = (
-            _merge(row[spec[0]], row[spec[1]])
-            if isinstance(spec, tuple)
-            else str(row.get(spec) or "")
-        )
+        if isinstance(spec, tuple):
+            old, new = row[spec[0]], row[spec[1]]
+            val = _merge(old, new)
+            changed = str(old or "") != str(new or "")
+            style = base if whole_row else (modified_style if changed else "")
+        else:
+            val = str(row.get(spec) or "")
+            style = base
         out.append(Text(val, style=style))
     return out
 
@@ -143,7 +171,7 @@ def _parse_dims(serialized: str) -> dict[str, str]:
     return out
 
 
-class ExploreDeltaScreen(Screen):
+class ExploreDeltaScreen(CopyScreen):
     CSS_PATH = "explore_delta_screen.tcss"
 
     _versions: list[str] = []
@@ -153,11 +181,22 @@ class ExploreDeltaScreen(Screen):
     _dimensions_list: list[tuple[str, str, dict[str, int]]] = []
     _cells: pl.DataFrame = pl.DataFrame()
     _delta_path: Path | None = None
+    # When False, label-only cell changes (same qname + dimensions) are hidden from
+    # the tree, counts and cells table so relocations that only relabel don't read as
+    # unexplained edits.
+    _include_labels: bool = False
+    # Cells grouping: "cell" (per cell), "col" (per column), "row" (per row).
+    _cell_view: str = "cell"
 
     def compose(self) -> ComposeResult:
         yield Horizontal(
             SourceSelect([], id="sel-old", prompt="Old version…"),
             SourceSelect([], id="sel-new", prompt="New version…"),
+            Checkbox(
+                "Include label-only changes",
+                value=self._include_labels,
+                id="chk-labels",
+            ),
             Button("Open", id="btn-open", variant="primary"),
             id="topbar",
         )
@@ -168,6 +207,12 @@ class ExploreDeltaScreen(Screen):
                     Tree("Changes", id="delta-tree"),
                     Vertical(
                         Label("Changed cells"),
+                        Select(
+                            [("By cell", "cell"), ("By column", "col"), ("By row", "row")],
+                            value="cell",
+                            allow_blank=False,
+                            id="cell-view",
+                        ),
                         DataTable(id="cells-table"),
                         Label("Selected cell — dimensions (old → new)"),
                         DataTable(id="cell-dims"),
@@ -205,8 +250,9 @@ class ExploreDeltaScreen(Screen):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.query_one("#cells-table", DataTable).add_columns(*_CELL_COLS)
-        self.query_one("#cells-table", DataTable).cursor_type = "row"
+        cells = self.query_one("#cells-table", DataTable)
+        cells.cursor_type = "row"
+        self._configure_cell_columns()
         self.query_one("#cell-dims", DataTable).add_columns(*_CELLDIM_COLS)
         self.query_one("#metrics-table", DataTable).add_columns(*_METRIC_COLS)
         self.query_one("#dims-table", DataTable).add_columns(*_DIM_COLS)
@@ -271,6 +317,45 @@ class ExploreDeltaScreen(Screen):
     def on_select_changed(self, event: Select.Changed) -> None:
         if event.select.id == "sel-old":
             self._rebuild("new")
+        elif event.select.id == "cell-view":
+            self._cell_view = str(event.value)
+            self.query_one("#cell-dims", DataTable).clear()
+            self._populate_cells(self._cells)
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        if event.checkbox.id != "chk-labels":
+            return
+        self._include_labels = event.value
+        if self._delta_path is None:
+            return
+        path = self._delta_path
+        include = self._include_labels
+
+        def worker() -> None:
+            try:
+                counts = load_delta_counts(path, include)
+                tree = load_delta_tree(path, include)
+                if self.is_mounted:
+                    self.app.call_from_thread(self._on_labels_reloaded, counts, tree)
+            except Exception as exc:
+                if self.is_mounted:
+                    self.app.call_from_thread(self._on_error, exc)
+
+        self.run_worker(worker, thread=True, name="reload-labels")
+
+    def _on_labels_reloaded(
+        self, counts: dict[str, dict[str, int]], tree: list
+    ) -> None:
+        if not self.is_mounted:
+            return
+        self.query_one("#overview", Static).update(
+            f"[b]Structure[/b] {_counts_str(counts['structure'])}    "
+            f"[b]Metrics[/b] {_counts_str(counts['metrics'])}    "
+            f"[b]Dimensions[/b] {_counts_str(counts['dimensions'])}"
+        )
+        self._build_tree(tree)
+        self._configure_cell_columns()
+        self.query_one("#cell-dims", DataTable).clear()
 
     def _start_open(self) -> None:
         old_db = self._db_path("old")
@@ -297,8 +382,8 @@ class ExploreDeltaScreen(Screen):
                         self.query_one("#overview", Static).update, label
                     ),
                 )
-                counts = load_delta_counts(delta_path)
-                tree = load_delta_tree(delta_path)
+                counts = load_delta_counts(delta_path, self._include_labels)
+                tree = load_delta_tree(delta_path, self._include_labels)
                 metrics = load_metric_changes(delta_path)
                 members = load_member_changes(delta_path)
                 if self.is_mounted:
@@ -327,6 +412,7 @@ class ExploreDeltaScreen(Screen):
         if not self.is_mounted:
             return
         self._delta_path = delta_path
+        self._cells = pl.DataFrame()
         self.query_one("#btn-open", Button).disabled = False
         self.query_one("#overview", Static).update(
             f"[b]Structure[/b] {_counts_str(counts['structure'])}    "
@@ -341,7 +427,9 @@ class ExploreDeltaScreen(Screen):
         self._dimensions_list = self._dim_rows()
         self._populate_dimensions(self._dimensions_list)
         self.query_one("#members-table", DataTable).clear()
-        self.query_one("#cells-table", DataTable).clear()
+        # Match the cells columns to the current toggle — the checkbox may already
+        # be on before Open, in which case the rows carry the extra label columns.
+        self._configure_cell_columns()
         self.query_one("#cell-dims", DataTable).clear()
 
     def _on_error(self, exc: Exception) -> None:
@@ -362,20 +450,24 @@ class ExploreDeltaScreen(Screen):
                 counts for _, _, subs in templates for _, _, counts in subs
             )
             p_node = widget.root.add(
-                _tree_label(perim, perim_total, bold=True), expand=False
+                _tree_label(perim, perim_total, bold=True),
+                expand=False,
+                data=("perimeter", perim, None),
             )
             for t_code, t_struct, subs in templates:
                 tmpl_total = _sum_counts(counts for _, _, counts in subs)
                 t_node = p_node.add(
                     _tree_label(t_code, tmpl_total, color=_node_color(t_struct)),
                     expand=False,
+                    data=("template", perim, t_code),
                 )
                 for s_code, s_struct, counts in subs:
                     s_color = _node_color(s_struct)
-                    # Leaf carries (perimeter, subtemplate_code) for the detail query.
+                    # Each node carries its level so the detail query can scope to
+                    # the whole perimeter, a template, or a single subtemplate.
                     t_node.add_leaf(
                         _tree_label(s_code, counts, color=s_color),
-                        data=(perim, s_code),
+                        data=("subtemplate", perim, s_code),
                     )
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
@@ -383,13 +475,22 @@ class ExploreDeltaScreen(Screen):
         data = node.data
         if not isinstance(data, tuple) or self._delta_path is None:
             return
-        perimeter, subtemplate_code = data
+        kind, perimeter, code = data
+        # Scope the query to the selected node's level.
+        subtemplate_code = code if kind == "subtemplate" else None
+        template_code = code if kind == "template" else None
         path = self._delta_path
         self.query_one("#cell-dims", DataTable).clear()
 
         def worker() -> None:
             try:
-                df = load_cell_changes(path, perimeter, subtemplate_code)
+                df = load_cell_changes(
+                    path,
+                    perimeter,
+                    subtemplate_code,
+                    self._include_labels,
+                    template_code,
+                )
                 if self.is_mounted:
                     self.app.call_from_thread(self._populate_cells, df)
             except Exception as exc:
@@ -398,28 +499,76 @@ class ExploreDeltaScreen(Screen):
 
         self.run_worker(worker, thread=True, name="load-cells")
 
+    def _configure_cell_columns(self) -> None:
+        """(Re)build the cells table columns; label columns only when labels are shown."""
+        table = self.query_one("#cells-table", DataTable)
+        table.clear(columns=True)
+        if self._cell_view == "col":
+            cols = ("Sub", "Col", "Col label", "Cells", "Changes")
+        elif self._cell_view == "row":
+            cols = ("Sub", "Row", "Row label", "Cells", "Changes")
+        else:
+            cols = _CELL_COLS_LABELS if self._include_labels else _CELL_COLS
+        table.add_columns(*cols)
+
     def _populate_cells(self, df: pl.DataFrame) -> None:
         if not self.is_mounted:
             return
         self._cells = df
+        self._configure_cell_columns()
         table = self.query_one("#cells-table", DataTable)
         table.clear()
+        if self._cell_view != "cell":
+            self._render_cells_aggregate(df)
+            return
+        specs = _CELL_SPECS_LABELS if self._include_labels else _CELL_SPECS
         if df.height:
             for row in df.iter_rows(named=True):
-                cells = _styled_row(
-                    row,
-                    ["row_code", "column_code", ("qname_old", "qname_new"), "type"],
-                    row.get("status", ""),
-                )
-                table.add_row(*cells, key=f"{row['row_code']}|{row['column_code']}")
+                cells = _styled_row(row, specs, row.get("status", ""))
+                key = f"{row['subtemplate_code']}|{row['row_code']}|{row['column_code']}"
+                table.add_row(*cells, key=key)
 
-    def _show_cell_dims(self, row_code: str, column_code: str) -> None:
+    def _render_cells_aggregate(self, df: pl.DataFrame) -> None:
+        """One line per (subtemplate, row|column): total cells + per-status badge."""
+        table = self.query_one("#cells-table", DataTable)
+        if not df.height:
+            return
+        code_col = "column_code" if self._cell_view == "col" else "row_code"
+        label_old = "column_label_old" if self._cell_view == "col" else "row_label_old"
+        label_new = "column_label_new" if self._cell_view == "col" else "row_label_new"
+        grouped = (
+            df.group_by("subtemplate_code", code_col, "status")
+            .agg(
+                pl.col(label_old).first().alias("label_old"),
+                pl.col(label_new).first().alias("label_new"),
+                pl.len().alias("n"),
+            )
+            .sort("subtemplate_code", code_col)
+        )
+        rows: dict[tuple[str, str], list] = {}
+        for r in grouped.iter_rows(named=True):
+            key = (r["subtemplate_code"], r[code_col])
+            entry = rows.setdefault(key, [_merge(r["label_old"], r["label_new"]), {}, 0])
+            entry[1][r["status"]] = r["n"]
+            entry[2] += r["n"]
+        for (sub, code), (label, counts, total) in rows.items():
+            table.add_row(
+                Text(str(sub)),
+                Text(str(code) if code is not None else ""),
+                Text(label),
+                Text(str(total)),
+                _colored_badge(counts),
+            )
+
+    def _show_cell_dims(self, sub: str, row_code: str, column_code: str) -> None:
         table = self.query_one("#cell-dims", DataTable)
         table.clear()
         if not self._cells.height:
             return
         match = self._cells.filter(
-            (pl.col("row_code") == row_code) & (pl.col("column_code") == column_code)
+            (pl.col("subtemplate_code") == sub)
+            & (pl.col("row_code") == row_code)
+            & (pl.col("column_code") == column_code)
         )
         if not match.height:
             return
@@ -428,9 +577,11 @@ class ExploreDeltaScreen(Screen):
         new = _parse_dims(row.get("dimensions_new", ""))
         for dim in sorted(set(old) | set(new)):
             o, n = old.get(dim, ""), new.get(dim, "")
-            # Only added/deleted/edited dimensions are colored; unchanged (o == n)
-            # ones stay default even though both sides are populated.
-            status = _member_status(o, n) if o != n else ""
+            # Only show dimensions that actually changed; unchanged (o == n) ones are
+            # skipped so the panel lists just the edit.
+            if o == n:
+                continue
+            status = _member_status(o, n)
             style = _STATUS_STYLE.get(status, "")
             table.add_row(Text(dim, style=style), Text(_merge(o, n), style=style))
 
@@ -529,7 +680,10 @@ class ExploreDeltaScreen(Screen):
         if not isinstance(key, str):
             return
         if event.data_table.id == "cells-table":
-            row_code, _, column_code = key.partition("|")
-            self._show_cell_dims(row_code, column_code)
+            if self._cell_view != "cell":
+                self.query_one("#cell-dims", DataTable).clear()
+                return
+            sub, row_code, column_code = key.split("|")
+            self._show_cell_dims(sub, row_code, column_code)
         elif event.data_table.id == "dims-table":
             self._populate_members(key)

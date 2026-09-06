@@ -22,7 +22,9 @@ from dpm.db import (
     load_fact_context,
     load_metric_usage,
     load_metrics,
+    load_perimeter_facts,
     load_subtemplate_facts,
+    load_template_facts,
     open_db,
 )
 
@@ -105,8 +107,20 @@ def test_load_db_tree(conn):
 
 def test_load_subtemplate_facts(conn):
     facts = load_subtemplate_facts(conn, "S1")
-    assert facts == [("R010", "C010", "Row", "Col", "mi1", "Metric One")]
+    assert facts == [("S1", "R010", "C010", "Row", "Col", "mi1", "Metric One")]
     assert load_subtemplate_facts(conn, "missing") == []
+
+
+def test_load_template_facts(conn):
+    facts = load_template_facts(conn, "T1")
+    assert facts == [("S1", "R010", "C010", "Row", "Col", "mi1", "Metric One")]
+    assert load_template_facts(conn, "missing") == []
+
+
+def test_load_perimeter_facts(conn):
+    facts = load_perimeter_facts(conn, "solo")
+    assert facts == [("S1", "R010", "C010", "Row", "Col", "mi1", "Metric One")]
+    assert load_perimeter_facts(conn, "missing") == []
 
 
 def test_load_metrics(conn):

@@ -49,6 +49,10 @@ ExploreScreen {
         color: $text-muted;
         margin-top: 1;
     }
+    #fact-view {
+        width: 24;
+        margin: 0 0 1 0;
+    }
     #facts-table {
         width: 100%;
         height: 2fr;

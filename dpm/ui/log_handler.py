@@ -21,8 +21,8 @@ class RichLogHandler(logging.Handler):
 _FORMATTER = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s — %(message)s")
 
 DPM_LOGGERS = [
-    "dpm.parser",
-    "dpm.toc",
+    "dpm.dpm_source",
+    "dpm.eiopa",
     "dpm.db",
     "dpm.workflows",
     "dpm.delta",

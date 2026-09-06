@@ -295,6 +295,7 @@ def generate_apply_debug_workbook(
         "Renamed facts": stats.renamed_facts,
         "Re-pointed facts": stats.repointed_facts,
         "New contexts": stats.new_contexts,
+        "Removed contexts": stats.removed_contexts,
     }
     ws = wb.add_worksheet("Summary")
     ws.freeze_panes(1, 0)

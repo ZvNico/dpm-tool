@@ -5,7 +5,7 @@ from __future__ import annotations
 import polars as pl
 
 from dpm._constants import METRIC_COLS
-from dpm._types import DpmDataset, TocEntry
+from dpm._types import DpmDataset, StructureEntry
 from dpm.delta import compare_dimensions, compare_metrics, compare_versions
 
 
@@ -33,7 +33,7 @@ def _facts(rows: list[dict[str, str]]) -> pl.DataFrame:
 def _dataset(rows: list[dict[str, str]]) -> DpmDataset:
     return DpmDataset(
         metrics=_facts(rows),
-        entries=[TocEntry(perimeter="solo", template_code="T1", subtemplate_code="S1")],
+        entries=[StructureEntry(perimeter="solo", template_code="T1", subtemplate_code="S1")],
     )
 
 
