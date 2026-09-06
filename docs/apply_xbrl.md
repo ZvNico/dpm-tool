@@ -87,6 +87,25 @@ Apply works on the raw bytes with regexes (not a DOM parse) and splices in place
 Both `<met:...>value</met:...>` and self-closing `<met:.../>` forms are matched
 (`flatten_metric_facts`), and overlapping matches are guarded against.
 
+## Pruning orphaned contexts
+
+Deleting facts and re-pointing them to cloned contexts can leave `<xbrli:context>`
+blocks that nothing references any more. As a **final pass over the fully patched
+document**, `_prune_orphan_contexts` removes them: it scans the output for **every**
+`contextRef` — metric facts, filing indicators (`find:filingIndicator`), footnotes,
+any consumer — and drops each context whose id appears in none of them
+(`_expand_deleted_span` again swallows the surrounding blank line).
+
+Running on the final bytes is what makes this correct and simple:
+
+- Newly cloned/reused contexts **survive**, because the facts we just re-pointed
+  reference them.
+- A context still used by a **non-metric** element (e.g. a filing indicator) is
+  **kept** — scanning only metric facts would wrongly delete it.
+- Contexts already orphaned in the input are cleaned up too.
+
+The count of removed contexts is reported as `ApplyStats.removed_contexts`.
+
 ## Perimeter detection
 
 The perimeter is auto-detected from the instance's `schemaRef` href
@@ -97,13 +116,13 @@ the first.
 ## Outputs and options
 
 `apply_delta` returns an `ApplyStats` (perimeter, facts before/after, and counts
-of deleted / renamed / re-pointed facts, new contexts, and deleted/modified
-qnames). Options:
+of deleted / renamed / re-pointed facts, new contexts, **removed (orphaned)
+contexts**, and deleted/modified qnames). Options:
 
 - **`dry_run`** — compute and report everything but do not write the output file.
 - **`debug_xlsx`** — write a debug workbook (`generate_apply_debug_workbook`)
   itemising every deleted, renamed and re-pointed fact and every new context,
-  for review.
+  for review; its Summary also reports the removed-context count.
 
 ## Summary of what happens to each fact
 
@@ -114,3 +133,4 @@ qnames). Options:
 | Cell's fixed dimensional members changed | Fact re-pointed to a (cloned/reused) context with the new members. |
 | Cell disappeared entirely | Fact deleted. |
 | No match in the delta | Kept — exactness prevents collateral deletion. |
+| Context left with no referencer after the above | Pruned in the final orphan-cleanup pass. |
