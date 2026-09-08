@@ -49,9 +49,9 @@ dpm = ["ui/*.tcss"]
 py-modules = ["app"]
 
 [project.urls]
-Homepage = "https://github.com/ZvNico/michael"
-Repository = "https://github.com/ZvNico/michael"
-Issues = "https://github.com/ZvNico/michael/issues"
+Homepage = "https://github.com/ZvNico/dpm-tool"
+Repository = "https://github.com/ZvNico/dpm-tool"
+Issues = "https://github.com/ZvNico/dpm-tool/issues"
 
 [project.scripts]
 dpm-tool = "app:main"
