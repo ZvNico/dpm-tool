@@ -36,7 +36,7 @@ resolve their destination with `resolve_output_path(value, default_name)`:
 
 ## The config file (`config.json`)
 
-A small JSON document with two keys:
+A small JSON document with keys for tracked versions, UI theme, and optional proxy:
 
 ```json
 {
@@ -44,7 +44,8 @@ A small JSON document with two keys:
     { "version": "2.8.0" },
     { "version": "2.10.0", "url": "https://dev.eiopa.europa.eu/.../custom.zip" }
   ],
-  "theme": "textual-dark"
+  "theme": "textual-dark",
+  "proxy": "http://127.0.0.1:9000"
 }
 ```
 
@@ -56,8 +57,11 @@ A small JSON document with two keys:
 - **`theme`** — the selected Textual UI theme, persisted whenever it changes
   (e.g. via the command palette) and restored on launch (an unknown/removed
   theme name is ignored).
+- **`proxy`** — optional HTTP/HTTPS proxy URL (e.g. `"http://127.0.0.1:9000"`). When
+  unset, direct connection is used. Can also be overridden with standard environment
+  variables (`DPM_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY`, etc.).
 
 `config.py` exposes `load_versions` / `save_versions` / `add_version` /
-`remove_version` and `load_theme` / `save_theme`; writes merge into the existing
-file so unrelated keys survive. Managing versions is done in the **Settings**
-screen; the theme is changed via the command palette.
+`remove_version`, `load_theme` / `save_theme`, and `load_proxy` / `save_proxy`;
+writes merge into the existing file so unrelated keys survive. Managing versions and
+proxy is done in the **Settings** screen; the theme is changed via the command palette.

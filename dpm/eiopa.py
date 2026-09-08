@@ -14,7 +14,9 @@ database file and cache it as ``{version}.db``.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import ssl
 import tempfile
 import urllib.error
 import urllib.parse
@@ -50,6 +52,132 @@ _DB_SUFFIXES = (".db", ".sqlite", ".sqlite3")
 # Streaming chunk size for downloads/extraction, sized so progress updates land
 # frequently on large (hundreds of MB) DPM databases without excessive callbacks.
 _CHUNK = 1 << 20  # 1 MiB
+_ssl_fallback_active: bool = False
+
+
+def get_proxy_url(config_path: Path | None = None) -> str | None:
+    """Return the configured proxy URL or None for direct connection.
+
+    Precedence:
+    1. Environment variables (DPM_PROXY, HTTPS_PROXY, HTTP_PROXY, etc.)
+    2. Config file (CONFIG_PATH, key 'proxy')
+    3. None (direct connection, no proxy)
+    """
+    for var in (
+        "DPM_PROXY",
+        "DPM_HTTP_PROXY",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+    ):
+        val = os.environ.get(var)
+        if val is not None:
+            val = val.strip()
+            if not val or val.lower() in ("none", "direct", "off", "no"):
+                return None
+            if "://" not in val:
+                val = f"http://{val}"
+            return val
+
+    from dpm.config import load_proxy
+
+    val = load_proxy(path=config_path)
+    if val:
+        val = val.strip()
+        if not val or val.lower() in ("none", "direct", "off", "no"):
+            return None
+        if "://" not in val:
+            val = f"http://{val}"
+        return val
+
+    return None
+
+
+def _get_opener(verify_ssl: bool = True) -> urllib.request.OpenerDirector:
+    """Construct a urllib opener configured with proxy and SSL context."""
+    proxy = get_proxy_url()
+    handlers: list[urllib.request.BaseHandler] = []
+    if proxy:
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    if not verify_ssl or _ssl_fallback_active:
+        ctx = ssl._create_unverified_context()
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+    else:
+        ctx = ssl.create_default_context()
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+    return urllib.request.build_opener(*handlers)
+
+
+def _open_url(req: urllib.request.Request, timeout: float = 30.0):
+    """Open a URL request with automatic proxy and SSL fallback on certificate errors."""
+    global _ssl_fallback_active
+    if _ssl_fallback_active:
+        return _get_opener(verify_ssl=False).open(req, timeout=timeout)
+
+    opener = _get_opener(verify_ssl=True)
+    try:
+        return opener.open(req, timeout=timeout)
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(exc):
+            LOG.warning(
+                "SSL verification failed, retrying and memorizing unverified context: %s",
+                exc,
+            )
+            _ssl_fallback_active = True
+            fallback_opener = _get_opener(verify_ssl=False)
+            return fallback_opener.open(req, timeout=timeout)
+        raise
+
+
+def test_proxy_connection(
+    proxy: str | None = None, timeout: float = 10.0
+) -> tuple[bool, str]:
+    """Test connectivity to EIOPA via the given proxy (or configured proxy if None).
+
+    Returns ``(success, message)``.
+    """
+    if proxy is not None:
+        raw = proxy.strip()
+        if not raw or raw.lower() in ("none", "direct", "off", "no"):
+            proxy_url = None
+        else:
+            proxy_url = f"http://{raw}" if "://" not in raw else raw
+    else:
+        proxy_url = get_proxy_url()
+
+    test_url = "https://www.eiopa.europa.eu/"
+    req = urllib.request.Request(test_url, method="HEAD", headers=_UA)
+
+    def _make_opener(verify: bool) -> urllib.request.OpenerDirector:
+        handlers: list[urllib.request.BaseHandler] = []
+        if proxy_url:
+            handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+        ctx = ssl.create_default_context() if verify else ssl._create_unverified_context()
+        handlers.append(urllib.request.HTTPSHandler(context=ctx))
+        return urllib.request.build_opener(*handlers)
+
+    target_desc = f"via {proxy_url}" if proxy_url else "directly"
+    try:
+        opener = _make_opener(verify=not _ssl_fallback_active)
+        with opener.open(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200)
+            return True, f"Connection OK ({status}) to EIOPA {target_desc}"
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(exc):
+            try:
+                fallback_opener = _make_opener(verify=False)
+                with fallback_opener.open(req, timeout=timeout) as resp:
+                    status = getattr(resp, "status", 200)
+                    return True, f"Connection OK ({status}) to EIOPA {target_desc} (SSL unverified)"
+            except Exception as sub_exc:
+                return False, f"Fallback connection failed: {sub_exc}"
+        reason = getattr(exc, "reason", exc)
+        return False, f"Connection failed: {reason}"
+    except Exception as exc:
+        return False, f"Connection error: {exc}"
 
 
 def _urls(folder: str, label: str) -> list[str]:
@@ -104,7 +232,7 @@ def candidate_urls(version: str) -> list[str]:
 def _head_ok(url: str, timeout: float = 15.0) -> bool:
     req = urllib.request.Request(url, method="HEAD", headers=_UA)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _open_url(req, timeout=timeout) as resp:
             return 200 <= resp.status < 400
     except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError):
         return False
@@ -140,7 +268,7 @@ def download_file(
     tmp = dest.with_suffix(dest.suffix + ".part")
     req = urllib.request.Request(url, headers=_UA)
     LOG.info("Downloading %s", url)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with _open_url(req, timeout=timeout) as resp:
         if not (200 <= resp.status < 300):
             raise RuntimeError(f"HTTP {resp.status} for {url}")
         total = int(resp.headers.get("Content-Length") or 0) or None
@@ -240,12 +368,11 @@ def fetch_dpm_database(
     with tempfile.TemporaryDirectory() as tmpdir:
         download_cb = extract_cb = None
         if on_progress:
-            download_cb = lambda done, total: on_progress(
-                done, total, "Downloading DPM database…"
-            )
-            extract_cb = lambda done, total: on_progress(
-                done, total, "Extracting database…"
-            )
+            def download_cb(done: int, total: int | None) -> None:
+                on_progress(done, total, "Downloading DPM database…")
+
+            def extract_cb(done: int, total: int | None) -> None:
+                on_progress(done, total, "Extracting database…")
         zip_path = download_file(
             resolved, Path(tmpdir) / f"{version}.zip", on_bytes=download_cb
         )
@@ -280,7 +407,7 @@ def list_version_files(version: str) -> list[tuple[str, str]]:
     for page in _LISTING_PAGES:
         req = urllib.request.Request(page, headers=_UA)
         try:
-            with urllib.request.urlopen(req, timeout=30.0) as resp:
+            with _open_url(req, timeout=30.0) as resp:
                 html = resp.read()
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as exc:
             LOG.warning("Could not fetch listing page %s: %s", page, exc)

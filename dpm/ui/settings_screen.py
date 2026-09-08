@@ -7,8 +7,15 @@ from textual.widget import Widget
 from textual.widgets import Button, Footer, Input, Label, ProgressBar, Static
 
 from dpm._constants import OUTPUT_DIR
-from dpm.config import VersionEntry, add_version, load_versions, remove_version
-from dpm.eiopa import download_version_files
+from dpm.config import (
+    VersionEntry,
+    add_version,
+    load_proxy,
+    load_versions,
+    remove_version,
+    save_proxy,
+)
+from dpm.eiopa import download_version_files, test_proxy_connection
 
 
 class VersionRow(Widget):
@@ -40,7 +47,15 @@ class SettingsScreen(Screen):
         with Vertical(id="card"):
             with Vertical(id="hero"):
                 yield Label("⚙  Settings", id="brand")
-                yield Label("DPM versions you track", id="tagline")
+                yield Label("DPM versions & network configuration", id="tagline")
+            with Horizontal(id="proxy-row"):
+                yield Input(
+                    value=load_proxy() or "",
+                    placeholder="Proxy URL — e.g. http://127.0.0.1:9000 (blank for direct)",
+                    id="inp-proxy",
+                )
+                yield Button("Test Proxy", id="btn-test-proxy")
+                yield Button("Save Proxy", id="btn-proxy", variant="primary")
             with Horizontal(id="add-row"):
                 yield Input(id="inp-version", placeholder="version — e.g. 2.10.0 or 2.8.2_hotfix")
                 yield Input(id="inp-url", placeholder="explicit URL (optional, for hotfixes)")
@@ -53,6 +68,9 @@ class SettingsScreen(Screen):
 
     def on_mount(self) -> None:
         self.query_one("#progress").display = False
+        current_proxy = load_proxy()
+        if current_proxy:
+            self.query_one("#inp-proxy", Input).value = current_proxy
         self._reload()
         self.query_one("#inp-version", Input).focus()
 
@@ -60,6 +78,10 @@ class SettingsScreen(Screen):
 
     def _reload(self, entries: list[VersionEntry] | None = None) -> None:
         entries = entries if entries is not None else load_versions()
+        try:
+            self.query_one("#inp-proxy", Input).value = load_proxy() or ""
+        except Exception:
+            pass
         listing = self.query_one("#versions-list", VerticalScroll)
         listing.remove_children()
         if entries:
@@ -75,6 +97,12 @@ class SettingsScreen(Screen):
         if button.id == "btn-add":
             self._add()
             return
+        if button.id == "btn-test-proxy":
+            self._test_proxy()
+            return
+        if button.id == "btn-proxy":
+            self._save_proxy()
+            return
         row = button.ancestors_with_self
         parent = next((w for w in row if isinstance(w, VersionRow)), None)
         if parent is None:
@@ -86,8 +114,42 @@ class SettingsScreen(Screen):
             self.action_remove()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        # Enter in either field adds the version.
-        self._add()
+        if event.input.id == "inp-proxy":
+            self._save_proxy()
+        else:
+            self._add()
+
+    def _test_proxy(self) -> None:
+        proxy_val = self.query_one("#inp-proxy", Input).value.strip() or None
+        btn = self.query_one("#btn-test-proxy", Button)
+        btn.disabled = True
+        self.notify("Testing connection to EIOPA…", severity="information")
+
+        cft = self.app.call_from_thread
+
+        def worker() -> None:
+            ok, msg = test_proxy_connection(proxy_val)
+            if self.is_mounted:
+                cft(self._on_test_proxy_result, ok, msg, btn)
+
+        self.run_worker(worker, thread=True, name="test-proxy")
+
+    def _on_test_proxy_result(self, ok: bool, msg: str, btn: Button) -> None:
+        if not self.is_mounted:
+            return
+        btn.disabled = False
+        if ok:
+            self.notify(msg, severity="information", title="Proxy Test Success")
+        else:
+            self.notify(msg, severity="error", title="Proxy Test Failed")
+
+    def _save_proxy(self) -> None:
+        proxy = self.query_one("#inp-proxy", Input).value.strip() or None
+        save_proxy(proxy)
+        if proxy:
+            self.notify(f"Proxy set to {proxy}", severity="information")
+        else:
+            self.notify("Proxy cleared (direct connection)", severity="information")
 
     def action_remove(self) -> None:
         if self._highlighted is None:

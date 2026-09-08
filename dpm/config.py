@@ -72,6 +72,33 @@ def save_theme(theme: str, path: Path = CONFIG_PATH) -> None:
     _save_raw(raw, path)
 
 
+def load_proxy(path: Path | None = None) -> str | None:
+    """Return the configured proxy URL, or ``None`` if unset/direct."""
+    target = CONFIG_PATH if path is None else path
+    val = _load_raw(target).get("proxy")
+    if val is not None:
+        val = str(val).strip()
+        if not val or val.lower() in ("none", "direct", "off", "no"):
+            return None
+        return val
+    return None
+
+
+def save_proxy(proxy: str | None, path: Path | None = None) -> None:
+    """Persist the proxy URL, preserving the rest of the config."""
+    target = CONFIG_PATH if path is None else path
+    raw = _load_raw(target)
+    if proxy is None:
+        raw.pop("proxy", None)
+    else:
+        text = str(proxy).strip()
+        if not text or text.lower() in ("none", "direct", "off", "no"):
+            raw.pop("proxy", None)
+        else:
+            raw["proxy"] = text
+    _save_raw(raw, target)
+
+
 def add_version(
     version: str, url: str | None = None, path: Path = CONFIG_PATH
 ) -> list[VersionEntry]:

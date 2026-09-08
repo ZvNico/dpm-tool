@@ -10,8 +10,16 @@ import platformdirs
 # works from any working directory. Override the root with the DPM_TOOL_HOME
 # environment variable (points both data and config at that path).
 _ENV_HOME = os.environ.get("DPM_TOOL_HOME")
-DATA_ROOT = Path(_ENV_HOME) if _ENV_HOME else Path(platformdirs.user_data_dir("dpm-tool"))
-_CONFIG_ROOT = Path(_ENV_HOME) if _ENV_HOME else Path(platformdirs.user_config_dir("dpm-tool"))
+DATA_ROOT = (
+    Path(_ENV_HOME)
+    if _ENV_HOME
+    else Path(platformdirs.user_data_dir("dpm-tool", appauthor=False))
+)
+_CONFIG_ROOT = (
+    Path(_ENV_HOME)
+    if _ENV_HOME
+    else Path(platformdirs.user_config_dir("dpm-tool", appauthor=False))
+)
 
 # Ingested version databases in ``db/versions`` and computed delta databases in
 # ``db/delta``.

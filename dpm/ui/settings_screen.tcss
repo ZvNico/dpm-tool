@@ -28,6 +28,23 @@ SettingsScreen {
         color: $text-muted;
     }
 
+    /* ── proxy row ───────────────────────────────────────────────────────── */
+    #proxy-row {
+        height: auto;
+        margin-bottom: 1;
+    }
+    #proxy-row #inp-proxy {
+        width: 1fr;
+        margin-right: 1;
+    }
+    #proxy-row #btn-test-proxy {
+        width: auto;
+        margin-right: 1;
+    }
+    #proxy-row #btn-proxy {
+        width: auto;
+    }
+
     /* ── add row ────────────────────────────────────────────────────────── */
     #add-row {
         height: auto;
